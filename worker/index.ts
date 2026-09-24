@@ -40,6 +40,14 @@ import { confirmInvite, getInvite, myApplication, submitApplication } from './ro
 import { getRuntimeConfig } from './routes/config'
 import { sendTestMail } from './routes/mail'
 import { getBootstrap, getPublicContent, getSiteConfigRoute, health } from './routes/public'
+import {
+  consumeDirectDownload,
+  consumeDirectUpload,
+  getStorageAdmin,
+  issueDirectTokenRoute,
+  testStorage,
+  updateStorageAdmin,
+} from './routes/storage'
 import { ssoCallback, ssoLogin, ssoLogout, ssoMe } from './routes/sso'
 import { serveFile, uploadImage } from './routes/uploads'
 
@@ -56,6 +64,9 @@ const routes: RouteDef[] = [
   // ---- 文件（头像等）：上传需管理员，读取公开且长缓存 ----
   // 例外：applications/ 前缀是报名表（含个人信息），只有管理员下载得到，见 serveFile
   { method: 'POST', path: '/api/admin/uploads', handler: uploadImage, auth: 'admin' },
+  // 一次性直连令牌（须注册在 /api/files/* 通配之前）：令牌即凭证，单次有效
+  { method: 'GET', path: '/api/files/direct/:token', handler: consumeDirectDownload },
+  { method: 'PUT', path: '/api/files/direct/:token', handler: consumeDirectUpload },
   { method: 'GET', path: '/api/files/*', handler: serveFile },
 
   // ---- 招新报名（学生侧，身份由教务网会话背书） ----
@@ -87,6 +98,12 @@ const routes: RouteDef[] = [
 
   // ---- 邮件通知（SMTP，当前为空实现，配置见 runtime.mail） ----
   { method: 'POST', path: '/api/admin/mail/test', handler: sendTestMail, auth: 'admin' },
+
+  // ---- 对象存储（两个业务目标独立配桶；provider 插件注册于 lib/storage/registry.ts） ----
+  { method: 'GET', path: '/api/admin/storage', handler: getStorageAdmin, auth: 'admin' },
+  { method: 'PUT', path: '/api/admin/storage', handler: updateStorageAdmin, auth: 'admin' },
+  { method: 'POST', path: '/api/admin/storage/test', handler: testStorage, auth: 'admin' },
+  { method: 'POST', path: '/api/admin/storage/direct-token', handler: issueDirectTokenRoute, auth: 'admin' },
 
   // ---- 后台：招新报名管理（状态流转 + 通知邮件 + 报名表下载） ----
   { method: 'GET', path: '/api/admin/applications', handler: listApplicationsAdmin, auth: 'admin' },

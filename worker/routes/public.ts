@@ -10,6 +10,7 @@ import { isSsoReady } from '../../shared/runtime'
 import { cacheable, fail, ok } from '../lib/http'
 import { getSiteConfig, listEntities } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
+import { getStorageConfig, targetReady } from '../lib/storage'
 import { resolveRuntimeConfig } from './config'
 
 /** 公开内容缓存 30 秒：后台改完内容最迟 30 秒内全球生效，同时挡住绝大部分重复请求 */
@@ -59,14 +60,18 @@ export async function health(ctx: RequestContext): Promise<Response> {
   }
 
   // 是否接通以后台设置（D1）为准，环境变量只是引导值
-  const runtime = await resolveRuntimeConfig(ctx)
+  const [runtime, storageConfig] = await Promise.all([resolveRuntimeConfig(ctx), getStorageConfig(ctx.env)])
 
   return ok({
     service: 'kingcola',
     database,
     ssoEnabled: runtime.sso.enabled,
     ssoConfigured: isSsoReady(runtime.sso),
-    joinMode: runtime.join.mode,
+    // 两个业务目标各自是否接通（配置在后台「对象存储」页维护）
+    storage: {
+      site: targetReady(ctx.env, storageConfig.site),
+      applications: targetReady(ctx.env, storageConfig.applications),
+    },
     bindings: {
       kv: Boolean(ctx.env.CONFIG_KV),
       r2: Boolean(ctx.env.FILES),

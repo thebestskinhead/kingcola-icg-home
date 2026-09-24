@@ -5,7 +5,6 @@
  */
 
 import { APPLICATION_DOC_SCOPE } from '../../shared/recruit'
-import type { Env } from '../env'
 import { randomHex } from './crypto'
 
 /** 文件访问路径前缀，数据库里存的就是带这个前缀的相对地址 */
@@ -109,21 +108,11 @@ export function fileUrl(key: string): string {
   return `${FILE_URL_PREFIX}${key}`
 }
 
-/** 从数据库存的相对地址反推出 R2 key；不是本站文件则返回 null */
+/** 从数据库存的相对地址反推 key；不是本站文件则返回 null。
+ *  完整的「地址 ↔ key 反解」（含 publicBase 直链）在 lib/storage/index.ts 的 resolveFileRef() */
 export function keyFromUrl(url: string | undefined | null): string | null {
   if (!url || !url.startsWith(FILE_URL_PREFIX)) return null
   const key = url.slice(FILE_URL_PREFIX.length).trim()
   if (!key || key.includes('..')) return null
   return key
-}
-
-/** 删除本站托管文件；外部链接或删除失败都静默忽略，不影响主流程 */
-export async function deleteLocalFile(env: Env, url: string | undefined | null): Promise<void> {
-  const key = keyFromUrl(url)
-  if (!key || !env.FILES) return
-  try {
-    await env.FILES.delete(key)
-  } catch {
-    // 清理失败只留下一个孤儿文件，不阻断业务
-  }
 }

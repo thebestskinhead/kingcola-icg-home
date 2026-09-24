@@ -31,7 +31,8 @@ import {
 import { clientIp, fail, ok, readJsonBody } from '../lib/http'
 import { createEntity, getSiteConfig, writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
-import { buildObjectKey, deleteLocalFile, fileUrl, sniffDocument } from '../lib/uploads'
+import { getStorage, storageReady } from '../lib/storage'
+import { buildObjectKey, sniffDocument } from '../lib/uploads'
 
 /** 取会话里的身份；路由已保证 auth: 'student'，这里只做兜底 */
 function identityOf(ctx: RequestContext): { studentId: string; name: string } | null {
@@ -55,9 +56,11 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
     return fail(403, 'RECRUIT_CLOSED', '当前不在招新期，报名通道已关闭')
   }
 
-  if (!ctx.env.FILES) {
-    return fail(503, 'STORAGE_UNAVAILABLE', '未配置 R2 存储桶，暂无法接收报名表')
+  // 报名表目标桶在后台「对象存储」页单独配置，可与站点图片分属不同服务商
+  if (!(await storageReady(ctx.env, 'applications'))) {
+    return fail(503, 'STORAGE_UNAVAILABLE', '对象存储未接通，暂无法接收报名表')
   }
+  const storage = await getStorage(ctx.env, 'applications')
 
   // 一位同学一条记录：已报过名就如实告知当前进度，而不是悄悄覆盖
   const existing = await getApplicationByStudentId(ctx.env, me.studentId)
@@ -110,7 +113,7 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
   }
 
   const key = buildObjectKey(APPLICATION_DOC_SCOPE, filename || 'application', kind.ext)
-  await ctx.env.FILES.put(key, file, { httpMetadata: { contentType: kind.mime } })
+  await storage.put(key, file, { contentType: kind.mime })
 
   let created
   try {
@@ -120,13 +123,13 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
       email: input.email.trim(),
       phone: input.phone.trim(),
       qq: input.qq.trim(),
-      fileUrl: fileUrl(key),
+      fileUrl: storage.objectUrl(key),
       fileName: filename || `application.${kind.ext}`,
       fileSize: file.size,
     })
   } catch (error) {
     // 落库失败就把刚上传的文件删掉，不留孤儿
-    await deleteLocalFile(ctx.env, fileUrl(key))
+    await storage.delete(key).catch(() => {})
     // 并发下可能撞上 UNIQUE(student_id)
     if (await getApplicationByStudentId(ctx.env, me.studentId)) {
       return fail(409, 'ALREADY_APPLIED', '你已经提交过报名表，可在本页查看当前进度')

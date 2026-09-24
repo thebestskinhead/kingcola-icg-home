@@ -160,53 +160,6 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
     </div>
   )
 
-  const channel = (
-    label: string,
-    value: RuntimeConfig['join'],
-    onChange: (next: RuntimeConfig['join']) => void,
-    hint: string,
-  ) => (
-    <div className="rounded-xl border border-border p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-sm font-medium">{label}</div>
-          <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>
-        </div>
-        <div className="flex gap-1.5">
-          {(['cloudflare', 'edgeone'] as const).map((mode) => (
-            <button
-              key={mode}
-              onClick={() => onChange({ ...value, mode })}
-              className={cn(
-                'rounded-full px-3 py-1.5 text-xs transition-colors',
-                value.mode === mode
-                  ? 'bg-primary text-primary-foreground'
-                  : 'border border-border text-foreground/70 hover:bg-secondary',
-              )}
-            >
-              {mode === 'cloudflare' ? 'Cloudflare 本站' : '国内 EdgeOne'}
-            </button>
-          ))}
-        </div>
-      </div>
-      {value.mode === 'edgeone' && (
-        <div className="mt-3 grid gap-1.5">
-          <Label className="text-xs">国内服务基址</Label>
-          <Input
-            value={value.edgeone}
-            onChange={(e) => onChange({ ...value, edgeone: e.target.value })}
-            placeholder="https://qr.example.cn"
-          />
-          {!value.edgeone && (
-            <p className="flex items-center gap-1.5 text-[11px] text-amber-600">
-              <AlertTriangle className="h-3 w-3" /> 未填写基址时，请求会自动回落到本站通道
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  )
-
   if (loading) {
     return <div className="py-20 text-center text-sm text-muted-foreground">加载中…</div>
   }
@@ -420,8 +373,8 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
         {/* ===== 流量通道 ===== */}
         <TabsContent value="channel" className="mt-5 rounded-2xl border border-border bg-card p-5 sm:p-6">
           <p className="text-sm text-muted-foreground">
-            高峰期可把「加入我们」相关接口切到国内边缘服务分流；
-            教务网登录的开关与授权服务器地址在这里维护，保存后官网立即生效
+            教务网登录的开关与授权服务器地址在这里维护，保存后官网立即生效；
+            文件存储（站点图片 / 报名表桶）已移至「对象存储」页面
           </p>
 
           <div className="mt-5 grid gap-4">
@@ -476,50 +429,6 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
                 <code className="rounded bg-secondary px-1">SSO_REDIRECT_URI</code> 属于敏感配置，
                 仍由服务端环境变量管理，不在后台填写。
               </p>
-            </div>
-
-            {channel(
-              '报名提交',
-              runtime.join,
-              (next) => setRuntime({ ...runtime, join: next }),
-              '报名提交接口属于下一阶段，通道配置先在这里预留',
-            )}
-
-            <div className="grid gap-4 rounded-xl border border-border p-4 sm:grid-cols-2">
-              <div>
-                <div className="text-sm font-medium">失败自动切换备用通道</div>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  主通道超时或返回 5xx 时自动重试备用通道（仅幂等请求）
-                </p>
-                <div className="mt-2">
-                  <Switch
-                    checked={runtime.failover}
-                    onCheckedChange={(checked) => setRuntime({ ...runtime, failover: checked })}
-                  />
-                </div>
-              </div>
-              <div>
-                <div className="text-sm font-medium">灰度比例</div>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  按设备哈希把指定百分比的流量导向国内通道，0 表示全量走主通道
-                </p>
-                <div className="mt-2 flex items-center gap-3">
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={String(runtime.rolloutPercent)}
-                    onChange={(e) =>
-                      setRuntime({
-                        ...runtime,
-                        rolloutPercent: Math.min(100, Math.max(0, Number(e.target.value) || 0)),
-                      })
-                    }
-                    className="w-24"
-                  />
-                  <span className="text-sm text-muted-foreground">%</span>
-                </div>
-              </div>
             </div>
 
             <p className="text-[11px] text-muted-foreground">

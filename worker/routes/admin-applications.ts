@@ -36,7 +36,7 @@ import { clientIp, fail, ok, readJsonBody } from '../lib/http'
 import { sendApplicationNotice } from '../lib/recruit-mail'
 import { getSiteConfig, writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
-import { deleteLocalFile, keyFromUrl } from '../lib/uploads'
+import { deleteStoredFile, getStorage, resolveFileRef } from '../lib/storage'
 import { resolveRuntimeConfig } from './config'
 
 function actorOf(ctx: RequestContext): string {
@@ -213,17 +213,16 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
 export async function downloadApplicationFile(ctx: RequestContext): Promise<Response> {
   const record = await getApplication(ctx.env, ctx.params.id)
   if (!record) return fail(404, 'NOT_FOUND', '报名记录不存在')
-  if (!ctx.env.FILES) return fail(503, 'STORAGE_UNAVAILABLE', '未配置 R2 存储桶')
 
-  const key = keyFromUrl(record.fileUrl)
-  if (!key) return fail(404, 'FILE_MISSING', '该记录没有报名表文件')
+  const ref = await resolveFileRef(ctx.env, record.fileUrl)
+  if (!ref) return fail(404, 'FILE_MISSING', '该记录没有报名表文件')
 
-  const object = await ctx.env.FILES.get(key)
+  const object = await (await getStorage(ctx.env, ref.purpose)).get(ref.key)
   if (!object) return fail(404, 'FILE_NOT_FOUND', '报名表文件已丢失')
 
-  const fallbackName = record.fileName || key.split('/').pop() || 'application'
+  const fallbackName = record.fileName || ref.key.split('/').pop() || 'application'
   const headers = new Headers({
-    'content-type': object.httpMetadata?.contentType ?? 'application/octet-stream',
+    'content-type': object.contentType ?? 'application/octet-stream',
     // 隐私材料，禁止任何中间缓存
     'cache-control': 'no-store',
     // 中文文件名必须走 RFC 5987 的 filename*，只给 filename 在部分浏览器会乱码
@@ -242,8 +241,8 @@ export async function deleteApplicationAdmin(ctx: RequestContext): Promise<Respo
   const removed = await deleteApplication(ctx.env, record.id)
   if (!removed) return fail(404, 'NOT_FOUND', '报名记录不存在')
 
-  // 顺手清掉 R2 里的报名表，避免留下含个人信息的孤儿文件
-  await deleteLocalFile(ctx.env, record.fileUrl)
+  // 顺手清掉存储桶里的报名表，避免留下含个人信息的孤儿文件
+  await deleteStoredFile(ctx.env, record.fileUrl)
 
   await writeAudit(ctx.env, {
     actor: actorOf(ctx),

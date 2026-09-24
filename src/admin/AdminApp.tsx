@@ -9,6 +9,7 @@ import { ContentPage } from './ContentPage'
 import { ApplicationsPage } from './ApplicationsPage'
 import { AuditPage } from './AuditPage'
 import { SettingsPage } from './SettingsPage'
+import { StoragePage } from './StoragePage'
 
 export function AdminApp() {
   const [identity, setIdentity] = useState<AdminIdentity | null>(null)
@@ -58,6 +59,7 @@ export function AdminApp() {
           <Route path="applications" element={<ApplicationsPage />} />
           <Route path="content/:resource" element={<ContentPage />} />
           <Route path="audit" element={<AuditPage />} />
+          <Route path="storage" element={<StoragePage />} />
           <Route path="settings" element={<SettingsPage identity={identity} />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />
         </Routes>

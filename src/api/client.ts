@@ -1,21 +1,17 @@
 /**
- * API 传输层：运行时通道解析 + 失败自动切换 + 统一错误处理。
+ * API 传输层：统一错误处理。
  *
- * 通道设计（对应「Cloudflare 主站 + 国内 serverless 降级」）：
- *   - core：公开内容、后台接口与教务网登录回调，恒定同源（Cloudflare），不参与切换；
- *   - join：报名提交，按后台开关与灰度比例决定走本站还是国内服务。
+ * 历史上曾有「报名提交走国内 EdgeOne 通道」的分流/灰度（runtime.join），
+ * 2026-09-24 随对象存储管理页一起移除 —— API 恒定同源，文件接入由存储适配层负责。
  */
 
 import {
   DEFAULT_RUNTIME_CONFIG,
   RUNTIME_CACHE_KEY,
-  type ChannelTarget,
   type RuntimeConfig,
   type RuntimeConfigResponse,
 } from '@shared/runtime'
 import { DEFAULT_SITE_CONFIG, type ApiResult, type SiteConfig } from '@shared/types'
-
-export type ApiGroup = 'core' | 'join'
 
 export class ApiError extends Error {
   readonly code: string
@@ -84,56 +80,9 @@ export async function refreshRuntimeConfig(): Promise<void> {
   return refreshPromise
 }
 
-// ===== 通道选择 =====
-
-function deviceBucket(): number {
-  let id = ''
-  try {
-    id = localStorage.getItem('kc-device-id') ?? ''
-    if (!id) {
-      id = Math.random().toString(36).slice(2) + Date.now().toString(36)
-      localStorage.setItem('kc-device-id', id)
-    }
-  } catch {
-    id = navigator.userAgent
-  }
-  let h = 0
-  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0
-  return h % 100
-}
-
-/** 返回 [主通道基址, 备用通道基址]；空字符串表示同源 */
-export function resolveChannels(group: ApiGroup): [string, string | null] {
-  if (group === 'core') return ['', null]
-
-  const target: ChannelTarget = runtime.join
-  const primary = target.mode === 'edgeone' ? target.edgeone : target.cloudflare
-  const secondary = target.mode === 'edgeone' ? target.cloudflare : target.edgeone
-
-  // 灰度：未命中的流量继续留在本站
-  if (target.mode === 'edgeone' && runtime.rolloutPercent > 0) {
-    if (deviceBucket() >= runtime.rolloutPercent) return ['', runtime.failover ? secondary || null : null]
-  }
-
-  // 主通道未配置（例如 EdgeOne 尚未部署）时直接回落
-  if (primary === '' && target.mode === 'edgeone') return ['', null]
-  return [primary, runtime.failover ? secondary || null : null]
-}
-
-function isRetryable(error: unknown): boolean {
-  if (!(error instanceof ApiError)) return false
-  if (error.status === 0) return true // 网络错误 / 超时
-  return error.status >= 500 || error.status === 429
-}
-
-const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD'])
-
 // ===== 底层请求 =====
 
 export interface RequestOptions {
-  group?: ApiGroup
-  /** 允许失败后切备用通道（默认：仅幂等请求允许） */
-  retry?: boolean
   timeoutMs?: number
   signal?: AbortSignal
 }
@@ -178,19 +127,8 @@ export async function apiRequest<T>(
   init: RequestInit = {},
   options: RequestOptions = {},
 ): Promise<T> {
-  const { group = 'core', timeoutMs = 15_000 } = options
-  const method = (init.method ?? 'GET').toUpperCase()
-  const [primary, secondary] = resolveChannels(group)
-  const allowRetry = options.retry ?? IDEMPOTENT_METHODS.has(method)
-
-  try {
-    return await doFetch<T>(primary, path, { ...init }, timeoutMs)
-  } catch (error) {
-    if (!allowRetry || !secondary || secondary === primary || !isRetryable(error)) throw error
-    // 主通道异常：自动切到备用通道，并记录一次事件方便排查
-    console.warn('[api] 主通道失败，切换到备用通道', { path, group, error })
-    return await doFetch<T>(secondary, path, { ...init }, timeoutMs)
-  }
+  const { timeoutMs = 15_000 } = options
+  return doFetch<T>('', path, { ...init }, timeoutMs)
 }
 
 export function jsonInit(method: string, body?: unknown): RequestInit {

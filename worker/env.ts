@@ -5,7 +5,10 @@ export interface Env {
   DB: D1Database
   /** KV：运行时配置缓存（可选） */
   CONFIG_KV?: KVNamespace
-  /** R2：报名表文件（本轮未启用） */
+  /**
+   * R2 桶绑定（可在 wrangler.toml 追加更多绑定，如 FILES_SITE / FILES_APPLICATIONS）。
+   * 哪个业务目标用哪个绑定，由后台「对象存储」页按绑定名选择；也可改用 S3 兼容存储。
+   */
   FILES?: R2Bucket
   /** 静态资源（Vite dist/） */
   ASSETS: Fetcher
@@ -24,9 +27,6 @@ export interface Env {
 
   /** SMTP 登录密码 / 授权码，只走服务端（wrangler secret put SMTP_PASSWORD） */
   SMTP_PASSWORD?: string
-
-  /** 报名通道：cloudflare | edgeone */
-  JOIN_MODE?: string
 
   /** 管理员会话签名密钥（wrangler secret put SESSION_SECRET） */
   SESSION_SECRET?: string

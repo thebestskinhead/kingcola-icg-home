@@ -1,5 +1,11 @@
 /** 后端接口的类型化封装。页面只依赖这里，不直接拼 URL。 */
 
+import type {
+  DirectAccessInfo,
+  StorageConfigView,
+  StoragePurpose,
+  StorageTargetConfig,
+} from '@shared/storage'
 import type { ApplicationNoticeKind } from '@shared/recruit'
 import type { ApplyTokenPayload, SsoMeResponse } from '@shared/sso'
 import type { RuntimeConfig } from '@shared/runtime'
@@ -181,18 +187,11 @@ export function adminUpdateConfig(patch: { site?: Partial<SiteConfig>; runtime?:
 // ===== 招新报名（学生侧） =====
 
 /**
- * 提交报名表。
- *
- * 走 `join` 通道：这一组就是为「报名提交 / 文件上传」准备的，
- * 后台可在「系统设置 → 流量通道」把它切到国内服务，切换前端无需重新部署。
- * 不要手动设置 content-type，交给浏览器带 multipart boundary。
+ * 提交报名表（multipart）。报名表文件按后台「对象存储」页的
+ * applications 目标桶存取；不要手动设置 content-type，交给浏览器带 boundary。
  */
 export function submitApplication(form: FormData) {
-  return apiRequest<Application>(
-    '/api/applications',
-    { method: 'POST', body: form },
-    { group: 'join', timeoutMs: 120_000 },
-  )
+  return apiRequest<Application>('/api/applications', { method: 'POST', body: form }, { timeoutMs: 120_000 })
 }
 
 export interface MyApplicationResponse {
@@ -312,4 +311,40 @@ export function adminSendTestMail(to?: string) {
     jsonInit('POST', { to: to ?? '' }),
     { timeoutMs: 30_000 },
   )
+}
+
+// ===== 对象存储 =====
+
+export interface StorageStatusResponse {
+  /** secret 已抹除的配置（secretAccessKey → secretConfigured 布尔） */
+  config: StorageConfigView
+  /** worker 侧已注册的适配器 id（内置 + 插件） */
+  providers: string[]
+  /** env 中检测到的 R2 桶绑定名，供 r2 模式选择 */
+  bindings: string[]
+  ready: Record<StoragePurpose, boolean>
+}
+
+export function adminGetStorage() {
+  return apiRequest<StorageStatusResponse>('/api/admin/storage')
+}
+
+export function adminUpdateStorage(patch: {
+  site?: Partial<StorageTargetConfig>
+  applications?: Partial<StorageTargetConfig>
+}) {
+  return apiRequest<{ config: StorageConfigView }>('/api/admin/storage', jsonInit('PUT', patch))
+}
+
+export function adminTestStorage(purpose: StoragePurpose) {
+  return apiRequest<{ ok: boolean; message: string }>(
+    '/api/admin/storage/test',
+    jsonInit('POST', { purpose }),
+    { timeoutMs: 30_000 },
+  )
+}
+
+/** 签发直连访问：s3 模式返回预签名 URL（真直连），r2 模式返回一次性令牌地址 */
+export function adminIssueDirectToken(body: { purpose: StoragePurpose; key: string; action: 'get' | 'put'; ttlSeconds?: number }) {
+  return apiRequest<DirectAccessInfo>('/api/admin/storage/direct-token', jsonInit('POST', body))
 }

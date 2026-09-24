@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import {
   Activity,
   ClipboardList,
+  Database,
   ExternalLink,
   FolderKanban,
   Images,
@@ -90,6 +91,7 @@ export function AdminLayout({
           ))}
 
           <div className="mt-3 px-3 pb-1 text-[11px] tracking-[0.2em] text-muted-foreground">系统</div>
+          <NavItem to="/admin/storage" icon={<Database className="h-4 w-4" />} label="对象存储" />
           <NavItem to="/admin/audit" icon={<Activity className="h-4 w-4" />} label="操作日志" />
           <NavItem to="/admin/settings" icon={<Settings className="h-4 w-4" />} label="系统设置" />
         </nav>
@@ -152,6 +154,9 @@ export function AdminLayout({
               {RESOURCES[key].label}
             </NavLink>
           ))}
+          <NavLink to="/admin/storage" className="whitespace-nowrap rounded-full px-3 py-1 text-xs text-foreground/70">
+            对象存储
+          </NavLink>
           <NavLink to="/admin/settings" className="whitespace-nowrap rounded-full px-3 py-1 text-xs text-foreground/70">
             设置
           </NavLink>

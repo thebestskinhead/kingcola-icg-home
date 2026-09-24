@@ -13,14 +13,17 @@ import { readSession } from '../lib/auth'
 import { clientIp, fail, ok } from '../lib/http'
 import { writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
-import { buildObjectKey, fileUrl, isPrivateKey, sniffImage } from '../lib/uploads'
+import { getStorage, purposeFromKey, storageReady } from '../lib/storage'
+import { buildObjectKey, isPrivateKey, sniffImage } from '../lib/uploads'
 
 const IMMUTABLE_CACHE = 'public, max-age=31536000, immutable'
 
 export async function uploadImage(ctx: RequestContext): Promise<Response> {
-  if (!ctx.env.FILES) {
-    return fail(503, 'STORAGE_UNAVAILABLE', '未配置 R2 存储桶，无法上传文件')
+  // 目标桶由后台「对象存储」页的 site 目标决定（R2 binding 或任意 S3 兼容存储）
+  if (!(await storageReady(ctx.env, 'site'))) {
+    return fail(503, 'STORAGE_UNAVAILABLE', '对象存储未接通，无法上传文件（请到后台「对象存储」检查配置）')
   }
+  const storage = await getStorage(ctx.env, 'site')
 
   let form: FormData
   try {
@@ -70,8 +73,9 @@ export async function uploadImage(ctx: RequestContext): Promise<Response> {
 
   const key = buildObjectKey(scope, file.name || 'file', kind.ext)
 
-  await ctx.env.FILES.put(key, file, {
-    httpMetadata: { contentType: kind.mime, cacheControl: IMMUTABLE_CACHE },
+  await storage.put(key, file, {
+    contentType: kind.mime,
+    cacheControl: IMMUTABLE_CACHE,
   })
 
   await writeAudit(ctx.env, {
@@ -85,20 +89,20 @@ export async function uploadImage(ctx: RequestContext): Promise<Response> {
   })
 
   return ok(
-    { key, url: fileUrl(key), size: file.size, contentType: kind.mime },
+    // 站点图配置了 publicBase 直链时，这里返回的就是直链地址，前端 <img> 直连桶
+    { key, url: storage.objectUrl(key), size: file.size, contentType: kind.mime },
     { status: 201 },
   )
 }
 
 export async function serveFile(ctx: RequestContext): Promise<Response> {
-  if (!ctx.env.FILES) {
-    return fail(503, 'STORAGE_UNAVAILABLE', '未配置 R2 存储桶')
-  }
-
   const key = ctx.params['*']
   if (!key || key.includes('..')) {
     return fail(400, 'INVALID_KEY', '文件路径不合法')
   }
+
+  // 目标桶按 key 前缀路由：applications/ 属报名表目标，其余归站点图片目标
+  const storage = await getStorage(ctx.env, purposeFromKey(key))
 
   // 报名表等私有文件（applications/ 前缀）含学号、姓名、联系方式：
   // 只有管理员会话能读，其余一律按「不存在」回应 —— 不透露「这里有个文件」这回事。
@@ -108,21 +112,21 @@ export async function serveFile(ctx: RequestContext): Promise<Response> {
     return fail(404, 'FILE_NOT_FOUND', '文件不存在或已被删除')
   }
 
-  const object = await ctx.env.FILES.get(key)
+  const object = await storage.get(key)
   if (!object) {
     return fail(404, 'FILE_NOT_FOUND', '文件不存在或已被删除')
   }
 
   const headers = new Headers({
-    'content-type': object.httpMetadata?.contentType ?? 'application/octet-stream',
+    'content-type': object.contentType ?? 'application/octet-stream',
     // 私有文件一律不缓存
     'cache-control': priv ? 'no-store' : IMMUTABLE_CACHE,
   })
 
   // 公开文件的名字带随机后缀、内容不会变，用 etag 做 304 协商；私有文件跳过协商，避免多一层缓存
-  if (!priv) {
-    headers.set('etag', object.httpEtag)
-    if (ctx.request.headers.get('if-none-match') === object.httpEtag) {
+  if (!priv && object.etag) {
+    headers.set('etag', object.etag)
+    if (ctx.request.headers.get('if-none-match') === object.etag) {
       return new Response(null, { status: 304, headers })
     }
   }

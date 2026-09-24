@@ -25,7 +25,7 @@ import {
   type Entity,
 } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
-import { deleteLocalFile } from '../lib/uploads'
+import { deleteStoredFile } from '../lib/storage'
 
 function resolveDef(ctx: RequestContext) {
   const key = ctx.params.resource
@@ -105,12 +105,12 @@ export async function updateContent(ctx: RequestContext): Promise<Response> {
   const updated = await updateEntity(ctx.env, def, ctx.params.id, body)
   if (!updated) return fail(404, 'NOT_FOUND', '记录不存在')
 
-  // 图片字段被替换时顺手删掉旧文件，避免 R2 里堆积孤儿文件
+  // 图片字段被替换时顺手删掉旧文件，避免桶里堆积孤儿文件
   for (const field of def.fields) {
     if (field.type !== 'image') continue
     const oldValue = before[field.key]
     if (typeof oldValue === 'string' && oldValue && oldValue !== body[field.key]) {
-      await deleteLocalFile(ctx.env, oldValue)
+      await deleteStoredFile(ctx.env, oldValue)
     }
   }
 
@@ -140,7 +140,7 @@ export async function deleteContent(ctx: RequestContext): Promise<Response> {
   // 删除记录时一并清理它引用的本站文件
   for (const field of def.fields) {
     if (field.type !== 'image') continue
-    await deleteLocalFile(ctx.env, before[field.key] as string | undefined)
+    await deleteStoredFile(ctx.env, before[field.key] as string | undefined)
   }
 
   await writeAudit(ctx.env, {
@@ -195,7 +195,6 @@ export async function updateAdminConfig(ctx: RequestContext): Promise<Response> 
       ...body.runtime,
       sso: { ...current.sso, ...(body.runtime.sso ?? {}) },
       mail: { ...current.mail, ...(body.runtime.mail ?? {}) },
-      join: { ...current.join, ...(body.runtime.join ?? {}) },
       version: current.version + 1,
       updatedAt: new Date().toISOString(),
     }
@@ -207,7 +206,7 @@ export async function updateAdminConfig(ctx: RequestContext): Promise<Response> 
       actor: actorOf(ctx),
       action: 'switch_channel',
       resource: 'runtime_config',
-      detail: `sso=${next.sso.enabled ? 'on' : 'off'} mail=${next.mail.enabled ? 'on' : 'off'} join=${next.join.mode} rollout=${next.rolloutPercent}% → v${next.version}`,
+      detail: `sso=${next.sso.enabled ? 'on' : 'off'} mail=${next.mail.enabled ? 'on' : 'off'} → v${next.version}`,
       ...requestMeta(ctx),
     })
   }

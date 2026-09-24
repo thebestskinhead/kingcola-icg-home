@@ -35,7 +35,6 @@ function merge(base: RuntimeConfig, ...patches: Partial<RuntimeConfig>[]): Runti
       ...patch,
       sso: { ...result.sso, ...(patch.sso ?? {}) },
       mail: { ...result.mail, ...(patch.mail ?? {}) },
-      join: { ...result.join, ...(patch.join ?? {}) },
     }
   }
   return result

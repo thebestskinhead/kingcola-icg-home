@@ -44,12 +44,19 @@ binding = "CONFIG_KV"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
 # ---------------------------------------------------------------------------
-# R2：报名表等文件（本轮未启用，先占位，缺失时 Worker 自动跳过）
+# R2：文件存储（默认绑定 FILES；站点图片与报名表两个业务目标都指向它，
+#       可在后台「对象存储」页改为任意 S3 兼容存储，或追加新绑定后按名选择）：
 #   npx wrangler r2 bucket create kingcola-files
 # ---------------------------------------------------------------------------
 [[r2_buckets]]
 binding = "FILES"
 bucket_name = "kingcola-files"
+
+# 需要给站点图片 / 报名表配独立桶时，取消注释并到后台「对象存储」页把对应目标的
+# 绑定名改为下面的名字即可（改完需重新部署）：
+# [[r2_buckets]]
+# binding = "FILES_APPLICATIONS"
+# bucket_name = "kingcola-applications"
 
 # ---------------------------------------------------------------------------
 # 环境变量（敏感值一律用 `npx wrangler secret put <NAME>` 写入，不要写这里）
@@ -63,8 +70,6 @@ ALLOWED_ORIGINS = ""
 SSO_AUTHORIZE_BASE = ""
 # 主站在授权服务器处的注册标识，需落在其客户端白名单内
 SSO_CLIENT_ID = "kingcola"
-# 报名接口通道：cloudflare = 本站；edgeone = 国内降级
-JOIN_MODE = "cloudflare"
 
 [observability]
 enabled = true

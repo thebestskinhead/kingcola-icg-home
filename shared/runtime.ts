@@ -8,16 +8,11 @@
 import { DEFAULT_SMTP_CONFIG, type SmtpConfig } from './mail'
 import type { ApiResult, SiteConfig } from './types'
 
-export type ApiChannel = 'cloudflare' | 'edgeone'
-
-export interface ChannelTarget {
-  /** 当前生效通道 */
-  mode: ApiChannel
-  /** Cloudflare 本站在线地址；同源时留空字符串表示使用相对路径 '' */
-  cloudflare: string
-  /** 国内 EdgeOne 服务基址，未部署时为空 */
-  edgeone: string
-}
+/**
+ * ⚠️ 旧版本曾有 `join: ChannelTarget`（报名提交通道，mode/cloudflare/edgeone），
+ * 2026-09-24 随对象存储管理页一起移除：文件类接入统一由「对象存储」页管理，
+ * API 恒定同源。存量 D1 数据里残留的 join 字段会被 merge 自然忽略。
+ */
 
 /**
  * 教务网登录（单点登录）。
@@ -56,11 +51,9 @@ export interface RuntimeConfig {
   sso: SsoTarget
   /** 邮件通知（SMTP）。密码不在其中，走服务端 SMTP_PASSWORD */
   mail: SmtpConfig
-  /** 报名提交 / 文件上传通道 */
-  join: ChannelTarget
-  /** 是否允许主通道失败时自动切换备用通道 */
+  /** @deprecated 历史 join 通道遗留字段，已无消费方，仅为兼容旧 JSON 保留 */
   failover: boolean
-  /** 灰度为国内通道的流量比例（0-100），仅 join 生效 */
+  /** @deprecated 历史 join 通道灰度比例，已无消费方，仅为兼容旧 JSON 保留 */
   rolloutPercent: number
 }
 
@@ -77,7 +70,6 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   updatedAt: '',
   sso: { enabled: false, authorizeBase: '' },
   mail: DEFAULT_SMTP_CONFIG,
-  join: { mode: 'cloudflare', cloudflare: '', edgeone: '' },
   failover: true,
   rolloutPercent: 0,
 }
