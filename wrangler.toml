@@ -1,0 +1,76 @@
+# ============================================================================
+# 拾光工作室官网 · Cloudflare Workers + Static Assets
+#
+# 部署流程：
+#   1) npm run build          # Vite 产出 dist/
+#   2) npx wrangler deploy    # 上传 Worker + dist/ 静态资源
+#
+# 本地开发：
+#   npm run dev:api           # wrangler dev（Worker + 静态资源，端口 8787）
+#   npm run dev               # vite dev（端口 3000，/api 反向代理到 8787）
+# ============================================================================
+
+name = "kingcola"
+main = "worker/index.ts"
+compatibility_date = "2026-09-01"
+
+# ---------------------------------------------------------------------------
+# 静态资源：dist/ 由 Vite 构建
+# run_worker_first 只把 /api/* 交给 Worker，其余静态资源由边缘直接返回，
+# 完全不消耗 Worker 请求配额 —— 这是 Workers + Static Assets 的核心优势。
+# ---------------------------------------------------------------------------
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+# ---------------------------------------------------------------------------
+# D1：唯一事实源（内容、管理员、审计、站点配置）
+# 首次部署前执行：
+#   npx wrangler d1 create kingcola-db
+# 然后把返回的 database_id 填到下面
+# ---------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "kingcola-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# ---------------------------------------------------------------------------
+# KV：运行时配置缓存 / 会话白名单（可选，缺失时自动降级为直读 D1）
+#   npx wrangler kv namespace create CONFIG_KV
+# ---------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "CONFIG_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# ---------------------------------------------------------------------------
+# R2：报名表等文件（本轮未启用，先占位，缺失时 Worker 自动跳过）
+#   npx wrangler r2 bucket create kingcola-files
+# ---------------------------------------------------------------------------
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "kingcola-files"
+
+# ---------------------------------------------------------------------------
+# 环境变量（敏感值一律用 `npx wrangler secret put <NAME>` 写入，不要写这里）
+# ---------------------------------------------------------------------------
+[vars]
+# 允许跨域访问 API 的来源，逗号分隔。生产环境与前端同源时保持为空即可。
+ALLOWED_ORIGINS = ""
+# 授权服务器基址（国内 EdgeOne 上的教务网登录服务）。
+# 现在由后台「系统设置 → 流量通道」维护，这里只是可选的部署引导值：
+# 后台保存过一次后，D1 里的值会覆盖它。留空即「未接通」。
+SSO_AUTHORIZE_BASE = ""
+# 主站在授权服务器处的注册标识，需落在其客户端白名单内
+SSO_CLIENT_ID = "kingcola"
+# 报名接口通道：cloudflare = 本站；edgeone = 国内降级
+JOIN_MODE = "cloudflare"
+
+[observability]
+enabled = true
+
+[env.preview]
+name = "kingcola-preview"
+
+[env.preview.vars]
+SSO_AUTHORIZE_BASE = ""
