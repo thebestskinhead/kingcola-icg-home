@@ -3,8 +3,10 @@
 学生工作室的对外门户 + 内部内容管理后台。
 
 - **前台**：每个板块一个独立路径 —— 首页 `/` · 新闻动态 `/news`（详情 `/news/:id`）· 项目介绍 `/projects` ·
-  团队成员 `/members` · 加入我们 `/join`（全部只读，数据来自后端接口；可直接输地址、刷新、分享链接）
-- **后台**：`/admin`，单管理员登录，管理成员、项目、新闻、轮播、站点设置与流量通道
+  团队成员 `/members` · 加入我们 `/join` · 邀请函确认 `/invite/:token`
+  （只读，数据来自后端接口；可直接输地址、刷新、分享链接）
+- **后台**：`/admin`，单管理员登录，管理报名（14 态招新流水线 + 自动通知邮件）、成员、项目、新闻、轮播、
+  站点设置与流量通道
 
 ## 技术栈
 
@@ -121,6 +123,8 @@ npm run deploy
 | `npm run deploy` | 构建并部署到 Cloudflare |
 | `npm run typecheck` | 只做类型检查（前端 + Worker） |
 | `npm run db:migrate:local` / `:remote` | 按顺序执行 `migrations/*.sql`（重复执行已应用的文件会报错，可忽略） |
+| `pwsh -File scripts/smoke-api.ps1` | 内容 / 设置 / 认证 端到端自检 |
+| `pwsh -File scripts/smoke-applications.ps1` | 招新报名链路自检（状态机、通知邮件、报名表隐私） |
 
 ## 设计要点
 
@@ -131,6 +135,10 @@ npm run deploy
 - **官网没有任何写死的文案**：工作室名称、Logo、简介、联系方式、页脚、招新文案全部来自 D1
   的 `site_config`，后台「系统设置」分页签维护；前后台共用 `shared/types.ts` 的 `SiteConfig`
   与 `shared/site.ts` 的解析规则（列表类文案的格式约定都收在这里）。新增字段**不需要数据库迁移**。
+- **招新报名是一条状态机流水线**：14 个状态（报名 → 笔试 → 面试 → 预备期 → 转正）集中声明在
+  `shared/recruit.ts`，非法流转后端直接拒绝；状态推进时自动发出笔试/面试邀请、感谢信与邀请函。
+  报名表存 R2 的 `applications/` 前缀，**只有管理员会话能下载**（含学号姓名，匿名一律 404）。
+  通过答辩后同学凭邮件里的一次性链接 `/invite/:token` 确认，后端当场写入成员表。
 - **响应统一信封**：所有接口返回 `{ ok: true, data }` 或 `{ ok: false, error }`。
 - **运行时流量切换**：`/api/config/runtime` 下发通道配置，报名相关接口按它选择
   Cloudflare 本站或国内 EdgeOne，主通道失败可自动切换备用通道，无需重新部署。

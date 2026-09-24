@@ -6,12 +6,13 @@ import { MembersSection } from '@/sections/MembersSection'
 import { ProjectsSection } from '@/sections/ProjectsSection'
 import { NewsSection } from '@/sections/NewsSection'
 import { JoinSection } from '@/sections/JoinSection'
+import { InviteSection } from '@/sections/InviteSection'
 import { Footer } from '@/sections/Footer'
 import { Toaster } from '@/components/ui/sonner'
 import { AdminApp } from '@/admin/AdminApp'
 import { refreshRuntimeConfig } from '@/api/client'
 import { useSiteData } from '@/api/hooks'
-import { PAGE_LABELS, PAGE_PATHS, type PageKey } from '@/types'
+import { INVITE_PATH, PAGE_LABELS, PAGE_PATHS, type PageKey } from '@/types'
 import { AlertTriangle } from 'lucide-react'
 
 /** 公开站点兜底页：只有后台有独立路由，其余未知路径都落在这里 */
@@ -98,6 +99,8 @@ function PublicSite() {
             <Route path={PAGE_PATHS.news} element={<NewsSection news={news} />} />
             <Route path={`${PAGE_PATHS.news}/:id`} element={<NewsSection news={news} />} />
             <Route path={PAGE_PATHS.join} element={<JoinSection site={site} />} />
+            {/* 邀请函确认页：链接由邮件发出，凭 token 进入，不要求登录 */}
+            <Route path={`${INVITE_PATH}/:token`} element={<InviteSection site={site} />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         )}

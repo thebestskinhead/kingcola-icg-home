@@ -5,14 +5,21 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import { DEFAULT_SMTP_CONFIG, isMailReady, mailStatusText, SMTP_PORT_PRESETS, type SmtpConfig } from '@shared/mail'
 import { DEFAULT_RUNTIME_CONFIG, isSsoReady, ssoStatusText, type RuntimeConfig } from '@shared/runtime'
 import { DEFAULT_SITE_CONFIG, type SiteConfig } from '@shared/types'
 import { parseJoinSteps, parseStatLabels, renderCopyright, splitLines, splitParagraphs } from '@shared/site'
 import { ImageField } from './ImageField'
-import { adminChangePassword, adminGetConfig, adminUpdateConfig, type AdminIdentity } from '@/api/endpoints'
+import {
+  adminChangePassword,
+  adminGetConfig,
+  adminSendTestMail,
+  adminUpdateConfig,
+  type AdminIdentity,
+} from '@/api/endpoints'
 import { ApiError, refreshRuntimeConfig } from '@/api/client'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeftRight, Eye, KeyRound, Save } from 'lucide-react'
+import { AlertTriangle, ArrowLeftRight, Eye, KeyRound, Mail, Save, Send } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 /** 带标签 + 提示的输入项 */
@@ -41,6 +48,10 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
   const [savingSite, setSavingSite] = useState(false)
   const [savingRuntime, setSavingRuntime] = useState(false)
 
+  const [mailSecretConfigured, setMailSecretConfigured] = useState(false)
+  const [testTo, setTestTo] = useState('')
+  const [sendingTest, setSendingTest] = useState(false)
+
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -53,6 +64,7 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
         if (!active) return
         setSite(response.site)
         setRuntime(response.runtime)
+        setMailSecretConfigured(response.mailSecretConfigured)
       })
       .catch((error) => toast.error(error instanceof ApiError ? error.message : '加载配置失败'))
       .finally(() => active && setLoading(false))
@@ -63,6 +75,10 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
 
   /** 局部更新站点配置 */
   const patch = (next: Partial<SiteConfig>) => setSite((prev) => ({ ...prev, ...next }))
+
+  /** 邮件配置：后端一定会下发（merge 默认值），这里再兜一层，防止旧后端返回体缺字段时白屏 */
+  const mail = runtime.mail ?? DEFAULT_SMTP_CONFIG
+  const patchMail = (next: Partial<SmtpConfig>) => setRuntime({ ...runtime, mail: { ...mail, ...next } })
 
   const saveSite = async () => {
     setSavingSite(true)
@@ -77,19 +93,34 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
     }
   }
 
-  const saveRuntime = async () => {
+  /** 流量通道与邮件配置共用同一个保存入口（两者都在 runtime 里） */
+  const saveRuntime = async (
+    title = '流量通道已生效',
+    description = '新通道最迟 1 分钟内对全部访客生效，存量页面会在下次刷新配置时切换',
+  ) => {
     setSavingRuntime(true)
     try {
       const response = await adminUpdateConfig({ runtime })
       if (response.runtime) setRuntime(response.runtime)
-      toast.success('流量通道已生效', {
-        description: '新通道最迟 1 分钟内对全部访客生效，存量页面会在下次刷新配置时切换',
-      })
+      toast.success(title, { description })
       refreshRuntimeConfig()
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : '保存失败')
     } finally {
       setSavingRuntime(false)
+    }
+  }
+
+  /** 测试邮件走的是「已保存」的配置 —— 改完表单要先保存再点这里 */
+  const sendTestMail = async () => {
+    setSendingTest(true)
+    try {
+      const result = await adminSendTestMail(testTo.trim() || undefined)
+      toast.success('测试邮件已发出', { description: `收件人：${result.accepted.join('、')}` })
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : '发送失败')
+    } finally {
+      setSendingTest(false)
     }
   }
 
@@ -201,6 +232,7 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
           <TabsTrigger value="recruit">招新与加入我们</TabsTrigger>
           <TabsTrigger value="footer">页脚</TabsTrigger>
           <TabsTrigger value="channel">流量通道</TabsTrigger>
+          <TabsTrigger value="mail">邮件通知</TabsTrigger>
           <TabsTrigger value="security">管理员密码</TabsTrigger>
         </TabsList>
 
@@ -499,6 +531,128 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
           <div className="mt-6 flex justify-end border-t border-border pt-4">
             <Button onClick={() => void saveRuntime()} disabled={savingRuntime} className="gap-1.5">
               <ArrowLeftRight className="h-4 w-4" /> {savingRuntime ? '切换中…' : '保存并生效'}
+            </Button>
+          </div>
+        </TabsContent>
+
+        {/* ===== 邮件通知（SMTP） ===== */}
+        <TabsContent value="mail" className="mt-5 rounded-2xl border border-border bg-card p-5 sm:p-6">
+          <h2 className="flex items-center gap-2 font-display text-lg font-bold">
+            <Mail className="h-4 w-4 text-accent" /> 邮件通知
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            报名通知等邮件通过 SMTP 发出。密码属于敏感配置，存放在服务端环境变量{' '}
+            <code className="rounded bg-secondary px-1">SMTP_PASSWORD</code>，不在后台填写（
+            {mailSecretConfigured ? '当前已配置' : '当前未配置'}）。
+          </p>
+
+          <div className="mt-5 grid gap-4">
+            <div className="flex items-center justify-between rounded-xl border border-border px-4 py-3">
+              <div>
+                <div className="text-sm font-medium">启用邮件通知</div>
+                <p className="mt-0.5 text-xs text-muted-foreground">关闭后全站不发送任何邮件</p>
+              </div>
+              <Switch checked={mail.enabled} onCheckedChange={(checked) => patchMail({ enabled: checked })} />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="SMTP 服务器" hint="如 smtp.exmail.qq.com">
+                <Input
+                  value={mail.host}
+                  onChange={(e) => patchMail({ host: e.target.value })}
+                  placeholder="smtp.example.com"
+                />
+              </Field>
+              <Field label="登录用户名" hint="多数服务商等于发件邮箱；留空表示不认证">
+                <Input
+                  value={mail.username}
+                  onChange={(e) => patchMail({ username: e.target.value })}
+                  placeholder="选填"
+                />
+              </Field>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label>连接方式</Label>
+              <div className="flex flex-wrap gap-2">
+                {SMTP_PORT_PRESETS.map((preset) => (
+                  <button
+                    key={preset.port}
+                    onClick={() => patchMail({ port: preset.port, security: preset.security })}
+                    className={cn(
+                      'rounded-full px-3 py-1.5 text-xs transition-colors',
+                      mail.port === preset.port
+                        ? 'bg-primary text-primary-foreground'
+                        : 'border border-border text-foreground/70 hover:bg-secondary',
+                    )}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <AlertTriangle className="h-3 w-3" />
+                Cloudflare 封锁了 25 端口，只能用 465（SSL/TLS）或 587（STARTTLS）
+              </p>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Field label="发件邮箱" hint="必须在服务商允许的发信白名单内">
+                <Input
+                  value={mail.fromAddress}
+                  onChange={(e) => patchMail({ fromAddress: e.target.value })}
+                  placeholder="studio@example.edu.cn"
+                />
+              </Field>
+              <Field label="发件人显示名">
+                <Input
+                  value={mail.fromName}
+                  onChange={(e) => patchMail({ fromName: e.target.value })}
+                  placeholder={site.studioName}
+                />
+              </Field>
+              <Field label="回信地址" hint="留空则用发件邮箱">
+                <Input
+                  value={mail.replyTo}
+                  onChange={(e) => patchMail({ replyTo: e.target.value })}
+                  placeholder="选填"
+                />
+              </Field>
+            </div>
+
+            <div className="rounded-xl border border-border p-4">
+              <div className="text-sm font-medium">发送测试邮件</div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                配置对不对只有真发一封才知道。收件人留空则发到「品牌与联系方式」里的联系邮箱，
+                <strong className="font-medium">测试使用的是已保存的配置，改完表单请先保存</strong>。
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Input
+                  value={testTo}
+                  onChange={(e) => setTestTo(e.target.value)}
+                  placeholder={site.contactEmail || 'you@example.com'}
+                  className="sm:max-w-xs"
+                />
+                <Button variant="outline" className="gap-1.5" onClick={() => void sendTestMail()} disabled={sendingTest}>
+                  <Send className="h-4 w-4" /> {sendingTest ? '发送中…' : '发送测试邮件'}
+                </Button>
+              </div>
+              <p className={cn('mt-3 text-[11px]', isMailReady(mail) ? 'text-emerald-600' : 'text-amber-600')}>
+                {mailStatusText(mail)}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+            <p className="text-[11px] text-muted-foreground">
+              保存后立即生效（与「流量通道」共用同一份运行时配置）
+            </p>
+            <Button
+              onClick={() => void saveRuntime('邮件配置已保存', '下次发送邮件即使用新配置')}
+              disabled={savingRuntime}
+              className="gap-1.5"
+            >
+              <Save className="h-4 w-4" /> {savingRuntime ? '保存中…' : '保存'}
             </Button>
           </div>
         </TabsContent>

@@ -9,10 +9,11 @@
  */
 
 import { formatLimit, uploadImageLimit } from '../../shared/resources'
+import { readSession } from '../lib/auth'
 import { clientIp, fail, ok } from '../lib/http'
 import { writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
-import { buildObjectKey, fileUrl, sniffImage } from '../lib/uploads'
+import { buildObjectKey, fileUrl, isPrivateKey, sniffImage } from '../lib/uploads'
 
 const IMMUTABLE_CACHE = 'public, max-age=31536000, immutable'
 
@@ -99,6 +100,14 @@ export async function serveFile(ctx: RequestContext): Promise<Response> {
     return fail(400, 'INVALID_KEY', '文件路径不合法')
   }
 
+  // 报名表等私有文件（applications/ 前缀）含学号、姓名、联系方式：
+  // 只有管理员会话能读，其余一律按「不存在」回应 —— 不透露「这里有个文件」这回事。
+  // 管理员下载走 GET /api/admin/applications/:id/file（还带原始文件名）。
+  const priv = isPrivateKey(key)
+  if (priv && !(await readSession(ctx.request, ctx.env))) {
+    return fail(404, 'FILE_NOT_FOUND', '文件不存在或已被删除')
+  }
+
   const object = await ctx.env.FILES.get(key)
   if (!object) {
     return fail(404, 'FILE_NOT_FOUND', '文件不存在或已被删除')
@@ -106,13 +115,16 @@ export async function serveFile(ctx: RequestContext): Promise<Response> {
 
   const headers = new Headers({
     'content-type': object.httpMetadata?.contentType ?? 'application/octet-stream',
-    'cache-control': IMMUTABLE_CACHE,
-    etag: object.httpEtag,
+    // 私有文件一律不缓存
+    'cache-control': priv ? 'no-store' : IMMUTABLE_CACHE,
   })
 
-  // 文件名带随机后缀、内容不会变，直接用 etag 做 304 协商
-  if (ctx.request.headers.get('if-none-match') === object.httpEtag) {
-    return new Response(null, { status: 304, headers })
+  // 公开文件的名字带随机后缀、内容不会变，用 etag 做 304 协商；私有文件跳过协商，避免多一层缓存
+  if (!priv) {
+    headers.set('etag', object.httpEtag)
+    if (ctx.request.headers.get('if-none-match') === object.httpEtag) {
+      return new Response(null, { status: 304, headers })
+    }
   }
 
   return new Response(object.body as unknown as BodyInit, { headers })

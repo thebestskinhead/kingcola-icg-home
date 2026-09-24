@@ -5,6 +5,7 @@
  * 切换通道只需改后台的一个开关，前端不需要重新构建部署。
  */
 
+import { DEFAULT_SMTP_CONFIG, type SmtpConfig } from './mail'
 import type { ApiResult, SiteConfig } from './types'
 
 export type ApiChannel = 'cloudflare' | 'edgeone'
@@ -53,6 +54,8 @@ export interface RuntimeConfig {
   updatedAt: string
   /** 教务网单点登录 */
   sso: SsoTarget
+  /** 邮件通知（SMTP）。密码不在其中，走服务端 SMTP_PASSWORD */
+  mail: SmtpConfig
   /** 报名提交 / 文件上传通道 */
   join: ChannelTarget
   /** 是否允许主通道失败时自动切换备用通道 */
@@ -73,6 +76,7 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   version: 0,
   updatedAt: '',
   sso: { enabled: false, authorizeBase: '' },
+  mail: DEFAULT_SMTP_CONFIG,
   join: { mode: 'cloudflare', cloudflare: '', edgeone: '' },
   failover: true,
   rolloutPercent: 0,

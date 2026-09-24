@@ -70,18 +70,80 @@ export interface Slide {
   sortOrder?: number
 }
 
+// ===== 招新报名（状态机规则见 shared/recruit.ts） =====
+
+/**
+ * 报名流水线的 14 个状态，覆盖「报名 → 笔试 → 面试 → 预备期 → 转正」全流程。
+ * 中文名 / 所属阶段 / 允许的流转都在 `shared/recruit.ts`，与前端共用同一份。
+ */
+export type ApplicationStatus =
+  /** 已提交报名（待安排笔试） */
+  | 'submitted'
+  /** 材料未通过初筛 */
+  | 'rejected'
+  /** 已安排笔试 */
+  | 'written_scheduled'
+  /** 笔试通过 */
+  | 'written_passed'
+  /** 笔试未通过 */
+  | 'written_failed'
+  /** 已安排面试 */
+  | 'interview_scheduled'
+  /** 面试通过 */
+  | 'interview_passed'
+  /** 面试未通过 */
+  | 'interview_failed'
+  /** 预备成员（试用期） */
+  | 'probation'
+  /** 预备期未通过 */
+  | 'probation_failed'
+  /** 已发送邀请函（待本人确认） */
+  | 'invited'
+  /** 正式成员（已写入成员表） */
+  | 'member'
+  /** 收到邀请但放弃 */
+  | 'declined'
+  /** 主动退出 / 失联 */
+  | 'withdrawn'
+
 export interface Application {
   id: string
+  /** 学号，来自教务网会话；同一位同学只保留一条记录 */
   studentId: string
+  /** 报名人姓名，来自教务网会话，学生不可自行修改 */
   name: string
-  gender: string
-  grade: string
-  major: string
-  phone: string
   email: string
-  direction: string
-  intro: string
-  submittedAt: string
+  phone: string
+  qq: string
+  /** 报名表在 R2 的相对地址，形如 /api/files/applications/xxx.pdf（含个人信息，仅管理员可下载） */
+  fileUrl: string
+  fileName: string
+  fileSize: number
+  status: ApplicationStatus
+
+  // ---- 笔试 ----
+  /** 笔试时间（YYYY-MM-DDTHH:mm，用于邀请邮件与后台展示） */
+  writtenAt: string
+  writtenScore: string
+  writtenNote: string
+
+  // ---- 面试 ----
+  interviewAt: string
+  interviewNote: string
+
+  // ---- 预备期 ----
+  probationNote: string
+
+  // ---- 邀请函与转正 ----
+  invitedAt: string
+  confirmedAt: string
+  /** 转正后对应 members.id */
+  memberId: string
+
+  /** 管理员备注（不对学生展示） */
+  note: string
+  createdAt?: string
+  updatedAt?: string
 }
 
 export type PageKey = 'home' | 'members' | 'projects' | 'news' | 'join'
@@ -139,6 +201,17 @@ export const PAGE_PATHS: Record<PageKey, string> = {
 /** 新闻详情的路径（新闻列表与首页「最新动态」共用） */
 export function newsPath(id: string): string {
   return `${PAGE_PATHS.news}/${encodeURIComponent(id)}`
+}
+
+/**
+ * 邀请函确认页的路径。
+ * 它不是一个「板块」（不进导航），所以与 PAGE_PATHS 分开；但路径同样只在这里声明一次。
+ */
+export const INVITE_PATH = '/invite'
+
+/** 邀请函确认页地址；`token` 是邮件里的一次性凭证 */
+export function invitePath(token: string): string {
+  return `${INVITE_PATH}/${encodeURIComponent(token)}`
 }
 
 // ===== 站点公开配置（工作室自身的全部信息，均可在后台编辑） =====

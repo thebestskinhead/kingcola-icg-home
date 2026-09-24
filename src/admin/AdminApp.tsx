@@ -6,6 +6,7 @@ import { AdminLayout } from './AdminLayout'
 import { LoginPage } from './LoginPage'
 import { Dashboard } from './Dashboard'
 import { ContentPage } from './ContentPage'
+import { ApplicationsPage } from './ApplicationsPage'
 import { AuditPage } from './AuditPage'
 import { SettingsPage } from './SettingsPage'
 
@@ -54,6 +55,7 @@ export function AdminApp() {
       <AdminLayout identity={identity} onLogout={logout}>
         <Routes>
           <Route index element={<Dashboard />} />
+          <Route path="applications" element={<ApplicationsPage />} />
           <Route path="content/:resource" element={<ContentPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="settings" element={<SettingsPage identity={identity} />} />

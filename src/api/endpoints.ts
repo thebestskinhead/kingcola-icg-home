@@ -1,8 +1,18 @@
 /** 后端接口的类型化封装。页面只依赖这里，不直接拼 URL。 */
 
+import type { ApplicationNoticeKind } from '@shared/recruit'
 import type { ApplyTokenPayload, SsoMeResponse } from '@shared/sso'
 import type { RuntimeConfig } from '@shared/runtime'
-import type { Member, NewsItem, Project, ResourceKey, SiteConfig, Slide } from '@shared/types'
+import type {
+  Application,
+  ApplicationStatus,
+  Member,
+  NewsItem,
+  Project,
+  ResourceKey,
+  SiteConfig,
+  Slide,
+} from '@shared/types'
 import { apiRequest, jsonInit } from './client'
 
 // ===== 公开只读 =====
@@ -153,6 +163,8 @@ export function adminAudit(limit = 100) {
 export interface AdminConfigResponse {
   site: SiteConfig
   runtime: RuntimeConfig
+  /** 服务端是否已配置 SMTP_PASSWORD（密码本身不下发，只告知有没有） */
+  mailSecretConfigured: boolean
 }
 
 export function adminGetConfig() {
@@ -163,5 +175,141 @@ export function adminUpdateConfig(patch: { site?: Partial<SiteConfig>; runtime?:
   return apiRequest<{ site: SiteConfig | null; runtime: RuntimeConfig | null }>(
     '/api/admin/config',
     jsonInit('PUT', patch),
+  )
+}
+
+// ===== 招新报名（学生侧） =====
+
+/**
+ * 提交报名表。
+ *
+ * 走 `join` 通道：这一组就是为「报名提交 / 文件上传」准备的，
+ * 后台可在「系统设置 → 流量通道」把它切到国内服务，切换前端无需重新部署。
+ * 不要手动设置 content-type，交给浏览器带 multipart boundary。
+ */
+export function submitApplication(form: FormData) {
+  return apiRequest<Application>(
+    '/api/applications',
+    { method: 'POST', body: form },
+    { group: 'join', timeoutMs: 120_000 },
+  )
+}
+
+export interface MyApplicationResponse {
+  application: Application | null
+  /** 已发出邀请函时给出确认页地址，省得同学翻邮箱找链接 */
+  inviteUrl?: string
+}
+
+export function myApplication(signal?: AbortSignal) {
+  return apiRequest<MyApplicationResponse>('/api/applications/me', { signal })
+}
+
+// ===== 招新报名（邀请函确认页） =====
+
+export interface InviteInfo {
+  alreadyMember: boolean
+  name: string
+  studentId: string
+  email?: string
+  expiresAt?: string
+  roleOptions?: readonly string[]
+  joinYear?: string
+  confirmedAt?: string
+}
+
+export function fetchInvite(token: string) {
+  return apiRequest<InviteInfo>(`/api/applications/invite/${encodeURIComponent(token)}`)
+}
+
+export interface ConfirmInviteBody {
+  title: string
+  nameEn?: string
+  direction?: string
+  bio?: string
+  email?: string
+}
+
+export function confirmInvite(token: string, body: ConfirmInviteBody) {
+  return apiRequest<{ memberId: string }>(
+    `/api/applications/invite/${encodeURIComponent(token)}`,
+    jsonInit('POST', body),
+  )
+}
+
+// ===== 招新报名（后台） =====
+
+/** 后台视图比学生视图多出邀请链接与状态中文名 */
+export interface AdminApplication extends Application {
+  inviteToken: string
+  inviteExpiresAt: string
+  inviteUrl: string
+  statusLabel: string
+}
+
+export interface AdminApplicationList {
+  items: AdminApplication[]
+  total: number
+  /** 各状态的条数，用于列表页顶部的筛选徽章 */
+  counts: Record<string, number>
+}
+
+export function adminListApplications(
+  params: { status?: ApplicationStatus[]; q?: string; limit?: number; offset?: number } = {},
+) {
+  const search = new URLSearchParams()
+  if (params.status?.length) search.set('status', params.status.join(','))
+  if (params.q) search.set('q', params.q)
+  if (params.limit) search.set('limit', String(params.limit))
+  if (params.offset) search.set('offset', String(params.offset))
+  const suffix = search.toString() ? `?${search}` : ''
+  return apiRequest<AdminApplicationList>(`/api/admin/applications${suffix}`)
+}
+
+export interface UpdateApplicationBody {
+  status?: ApplicationStatus
+  note?: string
+  writtenAt?: string
+  writtenScore?: string
+  writtenNote?: string
+  interviewAt?: string
+  interviewNote?: string
+  probationNote?: string
+  sendMail?: boolean
+  /** 补发某封信（状态不变时也能用） */
+  notice?: ApplicationNoticeKind
+}
+
+export interface UpdateApplicationResult {
+  application: AdminApplication
+  /** 本次触发的邮件结果；没有发信时为 null */
+  mail: { kind: ApplicationNoticeKind; sent: boolean; code: string; message: string } | null
+}
+
+export function adminUpdateApplication(id: string, body: UpdateApplicationBody) {
+  return apiRequest<UpdateApplicationResult>(
+    `/api/admin/applications/${encodeURIComponent(id)}`,
+    jsonInit('PUT', body),
+  )
+}
+
+export function adminDeleteApplication(id: string) {
+  return apiRequest<{ id: string }>(
+    `/api/admin/applications/${encodeURIComponent(id)}`,
+    jsonInit('DELETE'),
+  )
+}
+
+/** 报名表下载地址：需管理员会话，直接交给浏览器打开/下载即可 */
+export function applicationFileUrl(id: string) {
+  return `/api/admin/applications/${encodeURIComponent(id)}/file`
+}
+
+/** 给指定邮箱发一封测试邮件（`to` 留空则用站点联系邮箱），用于验证 SMTP 配置 */
+export function adminSendTestMail(to?: string) {
+  return apiRequest<{ accepted: string[]; messageId: string }>(
+    '/api/admin/mail/test',
+    jsonInit('POST', { to: to ?? '' }),
+    { timeoutMs: 30_000 },
   )
 }

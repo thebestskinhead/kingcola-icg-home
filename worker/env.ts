@@ -22,6 +22,9 @@ export interface Env {
   /** 回调地址；留空时按访问域名自动推导 */
   SSO_REDIRECT_URI?: string
 
+  /** SMTP 登录密码 / 授权码，只走服务端（wrangler secret put SMTP_PASSWORD） */
+  SMTP_PASSWORD?: string
+
   /** 报名通道：cloudflare | edgeone */
   JOIN_MODE?: string
 

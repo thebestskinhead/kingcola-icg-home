@@ -1,12 +1,26 @@
 import { useCallback, useEffect, useState } from 'react'
+import { ApplicationProgress } from '@/components/ApplicationProgress'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { STUDENT_LOGIN_URL, studentLogout, studentMe } from '@/api/endpoints'
+import {
+  STUDENT_LOGIN_URL,
+  myApplication,
+  studentLogout,
+  studentMe,
+  submitApplication,
+} from '@/api/endpoints'
+import { ApiError } from '@/api/client'
 import { useSsoTarget } from '@/api/hooks'
+import {
+  APPLICATION_DOC_ACCEPT,
+  APPLICATION_DOC_HINT,
+  APPLICATION_DOC_LIMIT,
+  validateApplicationForm,
+} from '@shared/recruit'
 import { isSsoReady } from '@shared/runtime'
 import { parseJoinSteps, splitLines } from '@shared/site'
-import type { SiteConfig } from '@/types'
+import type { Application, SiteConfig } from '@/types'
 import { CheckCircle2, QrCode, ShieldCheck, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -46,6 +60,11 @@ function consumeLoginNotice(): { ok: boolean; text: string } | null {
   return { ok: false, text: LOGIN_NOTICE[flag] ?? '登录未完成，请重试' }
 }
 
+/** 文件大小的人类可读写法 */
+function formatSize(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
 export function JoinSection({ site }: { site: SiteConfig }) {
   const recruitOpen = site.recruitOpen
   const steps = parseJoinSteps(site.joinSteps)
@@ -56,11 +75,33 @@ export function JoinSection({ site }: { site: SiteConfig }) {
 
   const [auth, setAuth] = useState<AuthState>('checking')
   const [identity, setIdentity] = useState<Identity | null>(null)
+  /** 已提交过的报名记录；有它就不再展示上传表单，改展示进度 */
+  const [application, setApplication] = useState<Application | null>(null)
+  const [inviteUrl, setInviteUrl] = useState('')
+  const [appLoading, setAppLoading] = useState(false)
 
   const [file, setFile] = useState<File | null>(null)
   const [fileError, setFileError] = useState('')
+  const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
+  const [qq, setQq] = useState('')
   const [dragOver, setDragOver] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  const loadApplication = useCallback(async () => {
+    setAppLoading(true)
+    try {
+      const result = await myApplication()
+      setApplication(result.application)
+      setInviteUrl(result.inviteUrl ?? '')
+    } catch {
+      // 查询失败不阻断页面：表单照常可用，提交时后端还会再查一次
+      setApplication(null)
+      setInviteUrl('')
+    } finally {
+      setAppLoading(false)
+    }
+  }, [])
 
   const refreshIdentity = useCallback(async () => {
     try {
@@ -68,8 +109,11 @@ export function JoinSection({ site }: { site: SiteConfig }) {
       if (me.authenticated && me.studentId) {
         setIdentity({ studentId: me.studentId, name: me.name ?? '' })
         setAuth('authenticated')
+        await loadApplication()
       } else {
         setIdentity(null)
+        setApplication(null)
+        setInviteUrl('')
         setAuth('anonymous')
       }
     } catch {
@@ -77,7 +121,7 @@ export function JoinSection({ site }: { site: SiteConfig }) {
       setIdentity(null)
       setAuth('anonymous')
     }
-  }, [])
+  }, [loadApplication])
 
   useEffect(() => {
     const notice = consumeLoginNotice()
@@ -120,23 +164,45 @@ export function JoinSection({ site }: { site: SiteConfig }) {
       setFileError('仅支持 .pdf 或 .docx 文件')
       return
     }
-    if (f.size > 20 * 1024 * 1024) {
-      setFileError('文件不能超过 20MB')
+    if (f.size > APPLICATION_DOC_LIMIT) {
+      setFileError(`文件不能超过 ${formatSize(APPLICATION_DOC_LIMIT)}`)
       return
     }
     if (!(await checkFile(f))) return
     setFile(f)
   }
 
-  const submit = () => {
+  const submit = async () => {
     if (!file) return toast.error('请先选择报名表文件')
-    if (!/^1\d{10}$/.test(phone.trim())) return toast.error('请填写正确的 11 位手机号，便于我们联系你')
+    const invalid = validateApplicationForm({ email, phone, qq })
+    if (invalid) return toast.error(invalid)
 
-    // 报名提交接口属于下一阶段（POST /api/applications + R2 上传），
-    // 身份已由报名会话背书，接口就绪后此处只需接上调用。
-    toast.info('报名提交接口将在下一阶段接入，当前未保存数据', {
-      description: `当前登录身份：${identity?.name ?? ''} ${identity?.studentId ?? ''}`,
-    })
+    const form = new FormData()
+    form.append('file', file)
+    form.append('email', email.trim())
+    form.append('phone', phone.trim())
+    form.append('qq', qq.trim())
+
+    setSubmitting(true)
+    try {
+      const created = await submitApplication(form)
+      setApplication(created)
+      setInviteUrl('')
+      setFile(null)
+      toast.success('报名表已提交，我们会尽快安排笔试', {
+        description: '笔试与面试安排会同时发到你的邮箱，请留意查收',
+      })
+    } catch (error) {
+      // 已经报过名：把已有记录取回来展示进度，而不是让同学对着报错发呆
+      if (error instanceof ApiError && error.code === 'ALREADY_APPLIED') {
+        await loadApplication()
+        toast.info(error.message)
+      } else {
+        toast.error(error instanceof ApiError ? error.message : '提交失败，请稍后重试')
+      }
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -180,19 +246,21 @@ export function JoinSection({ site }: { site: SiteConfig }) {
           )}
         </div>
 
-        {/* ===== 右：登录与报名表上传 ===== */}
+        {/* ===== 右：登录 / 报名表上传 / 进度 ===== */}
         <div className="border border-border bg-card p-6 sm:p-8">
-          {!recruitOpen ? (
+          {!recruitOpen && !(auth === 'authenticated' && application) ? (
             <div className="flex flex-col items-center py-16 text-center">
               <h3 className="font-display text-2xl font-bold">当前不在招新期</h3>
               <p className="mt-2 max-w-sm text-sm text-muted-foreground">
                 报名通道暂未开放。也欢迎先通过页脚邮箱与我们取得联系。
               </p>
             </div>
-          ) : auth === 'checking' ? (
+          ) : auth === 'checking' || (auth === 'authenticated' && appLoading) ? (
             <div className="flex flex-col items-center py-16">
               <span className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-              <p className="mt-3 text-sm text-muted-foreground">正在确认登录状态…</p>
+              <p className="mt-3 text-sm text-muted-foreground">
+                {auth === 'checking' ? '正在确认登录状态…' : '正在读取你的报名进度…'}
+              </p>
             </div>
           ) : auth === 'anonymous' ? (
             /* ---- 未登录 ---- */
@@ -219,8 +287,21 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 </p>
               </div>
             )
+          ) : application ? (
+            /* ---- 已登录且已提交过：展示进度 ---- */
+            <>
+              <ApplicationProgress application={application} inviteUrl={inviteUrl} />
+              <div className="mt-5 flex items-center justify-between border-t border-border pt-4 text-xs text-muted-foreground">
+                <span>
+                  {identity?.name || '已登录'} {identity?.studentId}
+                </span>
+                <button onClick={() => void signOut()} className="hover:text-accent">
+                  更换账号
+                </button>
+              </div>
+            </>
           ) : (
-            /* ---- 已登录：文件上传 ---- */
+            /* ---- 已登录且尚未报名：填写并上传 ---- */
             <>
               <div className="flex items-center justify-between">
                 <h2 className="font-display text-2xl font-bold">提交你的报名表</h2>
@@ -245,7 +326,7 @@ export function JoinSection({ site }: { site: SiteConfig }) {
               </div>
 
               <p className="mt-2 text-xs text-muted-foreground">
-                身份信息由学校教务网提供，不可手动修改 · 支持 PDF / DOCX（≤20MB）
+                身份信息由学校教务网提供，不可手动修改 · {APPLICATION_DOC_HINT}
               </p>
 
               {/* 文件拖放区 */}
@@ -267,7 +348,7 @@ export function JoinSection({ site }: { site: SiteConfig }) {
               >
                 <input
                   type="file"
-                  accept=".pdf,.docx"
+                  accept={APPLICATION_DOC_ACCEPT}
                   className="hidden"
                   onChange={(e) => void onPickFile(e.target.files?.[0] ?? null)}
                 />
@@ -277,7 +358,7 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {file
-                    ? `${(file.size / 1024 / 1024).toFixed(2)} MB · 校验通过`
+                    ? `${formatSize(file.size)} · 校验通过`
                     : '仅限 .pdf / .docx，仅修改后缀的文件无法通过校验'}
                 </p>
                 {fileError && <p className="mt-3 max-w-xs text-xs text-destructive">{fileError}</p>}
@@ -296,18 +377,39 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 </div>
               )}
 
-              <div className="mt-6 grid gap-1.5">
-                <Label>联系手机号 *</Label>
-                <Input
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="11 位手机号，便于反馈面谈安排"
-                />
+              <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-1.5 sm:col-span-2">
+                  <Label>邮箱 *</Label>
+                  <Input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="name@example.edu.cn"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    笔试、面试通知与邀请函都会发到这个邮箱，请填写常用的
+                  </p>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>手机号 *</Label>
+                  <Input
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="11 位手机号"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>QQ 号 *</Label>
+                  <Input value={qq} onChange={(e) => setQq(e.target.value)} placeholder="用于加入招新通知群" />
+                </div>
               </div>
 
-              <Button onClick={submit} className="mt-6 w-full" disabled={!file}>
-                上传并提交
+              <Button onClick={() => void submit()} className="mt-6 w-full" disabled={!file || submitting}>
+                {submitting ? '正在上传…' : '上传并提交'}
               </Button>
+              <p className="mt-3 text-xs text-muted-foreground">
+                提交后可在本页随时查看进度；一位同学只保留一条报名记录。
+              </p>
             </>
           )}
         </div>

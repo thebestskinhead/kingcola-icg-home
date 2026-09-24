@@ -159,7 +159,9 @@ export async function deleteContent(ctx: RequestContext): Promise<Response> {
 
 export async function getAdminConfig(ctx: RequestContext): Promise<Response> {
   const [site, runtime] = await Promise.all([getSiteConfig(ctx.env), resolveRuntimeConfig(ctx)])
-  return ok({ site, runtime })
+  // 密码本身绝不下发，只告诉后台「服务端有没有配」—— 否则用户无从判断认证失败的原因
+  const mailSecretConfigured = Boolean((ctx.env.SMTP_PASSWORD ?? '').trim())
+  return ok({ site, runtime, mailSecretConfigured })
 }
 
 interface SiteConfigBody {
@@ -192,6 +194,7 @@ export async function updateAdminConfig(ctx: RequestContext): Promise<Response> 
       ...current,
       ...body.runtime,
       sso: { ...current.sso, ...(body.runtime.sso ?? {}) },
+      mail: { ...current.mail, ...(body.runtime.mail ?? {}) },
       join: { ...current.join, ...(body.runtime.join ?? {}) },
       version: current.version + 1,
       updatedAt: new Date().toISOString(),
@@ -204,7 +207,7 @@ export async function updateAdminConfig(ctx: RequestContext): Promise<Response> 
       actor: actorOf(ctx),
       action: 'switch_channel',
       resource: 'runtime_config',
-      detail: `sso=${next.sso.enabled ? 'on' : 'off'} join=${next.join.mode} rollout=${next.rolloutPercent}% → v${next.version}`,
+      detail: `sso=${next.sso.enabled ? 'on' : 'off'} mail=${next.mail.enabled ? 'on' : 'off'} join=${next.join.mode} rollout=${next.rolloutPercent}% → v${next.version}`,
       ...requestMeta(ctx),
     })
   }

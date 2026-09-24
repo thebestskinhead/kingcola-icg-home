@@ -1,5 +1,6 @@
 import type { Env } from '../env'
 import type { AdminSession } from './auth'
+import type { StudentSession } from './student-auth'
 
 export interface RequestContext {
   request: Request
@@ -9,6 +10,8 @@ export interface RequestContext {
   exec: ExecutionContext
   /** 通过 auth: 'admin' 的路由会带上当前管理员会话 */
   admin?: AdminSession
+  /** 通过 auth: 'student' 的路由会带上当前报名学生会话（教务网登录） */
+  student?: StudentSession
 }
 
 export type RouteHandler = (ctx: RequestContext) => Promise<Response> | Response
@@ -21,8 +24,13 @@ export interface RouteDef {
    */
   path: string
   handler: RouteHandler
-  /** 'admin' 表示需要管理员会话 */
-  auth?: 'admin'
+  /**
+   * 会话要求：
+   * - 'admin'   管理员（kc_admin）
+   * - 'student' 报名学生（kc_student，教务网登录后签发）
+   * 两套会话完全独立，互不影响。
+   */
+  auth?: 'admin' | 'student'
 }
 
 export interface MatchResult {
