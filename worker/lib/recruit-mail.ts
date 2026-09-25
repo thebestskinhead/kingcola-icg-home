@@ -18,7 +18,6 @@ import {
   type RecruitTemplates,
 } from '../../shared/recruit'
 import type { SmtpConfig } from '../../shared/mail'
-import { cnTimeToText } from '../../shared/time'
 import { invitePath, type SiteConfig } from '../../shared/types'
 import type { Env } from '../env'
 import type { ApplicationRecord } from './applications'
@@ -39,22 +38,23 @@ export function buildInviteUrl(origin: string, token: string): string {
 }
 
 /**
- * 模板变量。时间一律用 `cnTimeToText` 转成北京时间的人话写法，
- * 不能直接把 `2026-10-08T14:00` 塞进邮件里。
+ * 模板变量。
+ *
+ * **没有任何时间与地点** —— 安排一律让同学看对应的 QQ 群，所以这里给的是四个群号。
+ * 群号还没填时给一个显眼的占位符，而不是留一行空白：
+ * 至少让人看出「这里本来应该有个群号」，而不是以为信里就是空的。
  */
 export function buildNoticeVars(record: ApplicationRecord, ctx: NoticeContext): Record<string, string> {
   const { cycle, studio } = ctx
+  const group = (value: string) => value.trim() || '（待公布）'
   return {
     name: record.name || '同学',
     studentId: record.studentId,
     cycleName: cycle.name || '本次招新',
-    writtenAt: cnTimeToText(cycle.writtenAt),
-    writtenPlace: cycle.writtenPlace,
-    interviewAt: cnTimeToText(cycle.interviewAt),
-    interviewPlace: cycle.interviewPlace,
-    defenseStart: cnTimeToText(cycle.defenseStart),
-    defenseEnd: cnTimeToText(cycle.defenseEnd),
-    onboardDeadline: cnTimeToText(cycle.onboardDeadline),
+    writtenGroup: group(cycle.groups.written),
+    interviewGroup: group(cycle.groups.interview),
+    probationGroup: group(cycle.groups.probation),
+    formalGroup: group(cycle.groups.formal),
     inviteLink: record.inviteToken ? buildInviteUrl(ctx.origin, record.inviteToken) : '',
     studio: studio.studioName,
     contactEmail: studio.contactEmail,

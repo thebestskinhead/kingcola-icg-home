@@ -48,8 +48,8 @@ export function HomeSection({
       {/* ===== 轮播图 ===== */}
       <HeroCarousel slides={slides} />
 
-      {/* ===== 招新横幅：报名进行中才出现，由招新周期自动派生 ===== */}
-      {recruit?.phase === 'applying' && (
+      {/* ===== 招新横幅：报名通道开着才出现（后台点「开启报名」即开） ===== */}
+      {recruit?.applyOpen && (
         <section className="animate-fade-up bg-primary text-primary-foreground">
           <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-6 px-4 py-12 sm:flex-row sm:items-center sm:px-6">
             <div>

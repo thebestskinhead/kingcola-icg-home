@@ -15,10 +15,10 @@ type Phase = 'loading' | 'form' | 'done' | 'invalid'
 /**
  * 扫码签到页（`/checkin/:token`）。
  *
- * 这条路径**不进导航**，只由后台为每个考试场次生成的二维码指向它：
- * 凭证就是 URL 里的 token（绑场次 + 带失效时间），所以不需要登录态。
- * token 无效 / 过期 / 被作废时后端连「这场考试叫什么」都不返回，
- * 页面只显示一句「二维码无效」，不泄露场内信息。
+ * 这条路径**不进导航**，只由后台按阶段（笔试 / 面试 / 答辩）签发的二维码指向它：
+ * 凭证就是 URL 里的 token（只绑阶段 + 带失效时间 + 可随时作废），所以不需要登录态。
+ * token 无效 / 过期 / 被作废时后端不返回任何信息，
+ * 页面只显示一句「二维码无效」，不泄露场上信息。
  */
 export function CheckinSection({ site }: { site: SiteConfig }) {
   const { token = '' } = useParams<{ token: string }>()
@@ -104,7 +104,6 @@ export function CheckinSection({ site }: { site: SiteConfig }) {
         </h1>
         <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
           {result?.name} 同学，已记录你的{info?.stageLabel}签到
-          {info?.sessionLabel ? `（${info.sessionLabel}）` : ''}
           {result?.already ? '，此前已经签过，无需重复' : '，祝顺利'}。
         </p>
         <p className="mt-2 text-xs text-muted-foreground">
@@ -128,11 +127,9 @@ export function CheckinSection({ site }: { site: SiteConfig }) {
       </div>
       <h1 className="mt-3 font-display text-3xl font-bold">{info?.stageLabel}签到</h1>
 
-      {(info?.sessionLabel || info?.sessionTime) && (
-        <p className="mt-3 rounded-lg bg-secondary px-3 py-2 text-sm text-foreground/80">
-          {[info?.sessionLabel, info?.sessionTime].filter(Boolean).join(' · ')}
-        </p>
-      )}
+      <p className="mt-3 rounded-lg bg-secondary px-3 py-2 text-sm text-foreground/80">
+        这里只登记「{info?.stageLabel}已到场」；具体时间与地点以群里通知为准。
+      </p>
 
       <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
         填写报名时用的姓名与学号即可完成签到，一个字都不能差。

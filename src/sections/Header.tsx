@@ -1,5 +1,6 @@
 import { Link, NavLink } from 'react-router'
 import { StudioLogo } from '@/components/brand'
+import { isRecruitVisible } from '@shared/recruit'
 import type { RecruitPhaseInfo } from '@/api/endpoints'
 import { PAGE_LABELS, PAGE_PATHS, type PageKey, type SiteConfig } from '@/types'
 import { cn } from '@/lib/utils'
@@ -60,12 +61,12 @@ export function Header({ site, recruit }: { site: SiteConfig; recruit?: RecruitP
         ))}
       </nav>
 
-      {/* 招新提示：由招新周期自动派生 —— 报名中 / 流程进行中都提示，文案按报名是否还开着区分 */}
-      {recruit && (recruit.phase === 'applying' || recruit.phase === 'in_progress') && (
+      {/* 招新提示：由整届状态派生 —— 报名中与流程中都提示，文案按报名是否还开着区分 */}
+      {recruit && isRecruitVisible(recruit.state) && (
         <div className="bg-emerald-500/10 px-4 py-1.5 text-center text-xs text-emerald-700">
           {recruit.applyOpen
             ? '招新进行中：「加入我们」报名通道已开放'
-            : '招新进行中：本届报名已截止，笔试与面试正在安排'}
+            : '招新进行中：本届报名已截止，后续安排请在对应的 QQ 群查看'}
         </div>
       )}
     </header>

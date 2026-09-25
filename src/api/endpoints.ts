@@ -8,14 +8,16 @@ import type {
 } from '@shared/storage'
 import type {
   CheckinStage,
-  RecruitAutoPreview,
-  RecruitAutoTask,
-  RecruitBoard,
+  RecruitAction,
+  RecruitActionResult,
+  RecruitCheckinCodeMap,
   RecruitCycleConfig,
   RecruitMailKind,
-  RecruitPhase,
+  RecruitProgressInfo,
+  RecruitPublicStatus,
   RecruitResult,
   RecruitStage,
+  RecruitStats,
   RecruitTemplates,
 } from '@shared/recruit'
 import type { ApplyTokenPayload, SsoMeResponse } from '@shared/sso'
@@ -34,15 +36,10 @@ import { apiRequest, jsonInit } from './client'
 // ===== 公开只读 =====
 
 /**
- * 首屏聚合里顺带带的招新状态。
+ * 首屏聚合里顺带带的招新状态（与 `/api/public/recruit` 同一形状）。
  * 首页横幅、顶部提示的显隐由它派生 —— 不必再发一次请求，也没有「招新总开关」可配。
  */
-export interface RecruitPhaseInfo {
-  phase: RecruitPhase
-  applyOpen: boolean
-  name: string
-  notice: string
-}
+export type RecruitPhaseInfo = RecruitPublicStatus
 
 export interface BootstrapData {
   members: Member[]
@@ -210,18 +207,7 @@ export function adminUpdateConfig(patch: { site?: Partial<SiteConfig>; runtime?:
 
 // ===== 招新（公开：报名页与签到页用） =====
 
-export interface RecruitStatus {
-  phase: RecruitPhase
-  name: string
-  applyStart: string
-  applyEnd: string
-  applyStartText: string
-  applyEndText: string
-  /** 报名通道是否开放 */
-  applyOpen: boolean
-  /** 给「加入我们」页面的说明文案 */
-  notice: string
-}
+export type RecruitStatus = RecruitPublicStatus
 
 export function fetchRecruitStatus(signal?: AbortSignal) {
   return apiRequest<RecruitStatus>('/api/public/recruit', { signal })
@@ -231,18 +217,13 @@ export interface CheckinInfo {
   stage: CheckinStage
   /** 阶段中文名，如「笔试」 */
   stageLabel: string
-  sessionId: string
-  /** 场次称呼，如「第一场」「上午场」 */
-  sessionLabel: string
-  /** 场次时间文本，如「2026 年 10 月 8 日 14:00–16:00」 */
-  sessionTime: string
   cycleName: string
   studioName: string
 }
 
 /**
- * 读取签到页要展示的信息。`token` 就是二维码里的凭证（绑场次 + 带失效时间），
- * 无效 / 过期 / 被作废时后端返回 404，且不透露任何场次信息。
+ * 读取签到页要展示的信息。`token` 就是二维码里的凭证（只绑阶段 + 带失效时间），
+ * 无效 / 过期 / 被作废时后端返回 404，且不透露任何信息。
  */
 export function fetchCheckinInfo(token: string, signal?: AbortSignal) {
   return apiRequest<CheckinInfo>(`/api/applications/checkin/${encodeURIComponent(token)}`, { signal })
@@ -252,9 +233,8 @@ export interface CheckinResult {
   already: boolean
   name: string
   stage: CheckinStage
+  stageLabel: string
   at: string
-  sessionId: string
-  sessionLabel: string
 }
 
 export function submitCheckin(token: string, body: { name: string; studentId: string }) {
@@ -285,22 +265,14 @@ export function submitApplication(form: FormData, replace = false) {
   )
 }
 
-/** 进度页要用到的本届安排（时间都是后台配置里的全局时间窗） */
-export interface RecruitSchedule {
-  writtenAt: string
-  writtenPlace: string
-  interviewAt: string
-  interviewPlace: string
-  defenseStart: string
-  defenseEnd: string
-  onboardDeadline: string
-}
-
 export interface MyApplicationResponse {
-  phase: RecruitPhase
+  /** 整届状态（报名中 / 笔试中 / 已截止…），进度页据此显示说明 */
+  state: RecruitProgressInfo['state']
   cycleName: string
   notice: string
-  schedule: RecruitSchedule
+  /** 他此刻该进哪个群（报名阶段为空 —— 还没分群） */
+  groupLabel: string
+  group: string
   application: Application | null
   /** 已发出邀请函时给出确认页地址，省得同学翻邮箱找链接 */
   inviteUrl?: string
@@ -343,15 +315,11 @@ export function confirmInvite(token: string, body: ConfirmInviteBody) {
   )
 }
 
-// ===== 招新（后台：周期 / 模板 / 看板 / 自动流程） =====
+// ===== 招新（后台：整届状态 / 模板 / 动作 / 签到二维码） =====
 
 export interface AdminRecruitSettings {
   cycle: RecruitCycleConfig
   templates: RecruitTemplates
-  phase: RecruitPhase
-  /** 招新模块现在对管理员是否开放（非招新期菜单收起） */
-  moduleOpen: boolean
-  notice: string
   /** 模板里写错的变量，按模板分类给出提示 */
   unknownVariables: Record<string, string[]>
 }
@@ -360,48 +328,63 @@ export function adminGetRecruit() {
   return apiRequest<AdminRecruitSettings>('/api/admin/recruit')
 }
 
+/**
+ * 保存名称 / 群号 / 模板。
+ * 注意**不接受 state** —— 整届状态只能通过 `adminRunRecruitAction` 推进，
+ * 否则设置页保存一下就可能把流程跳到别的阶段。
+ */
 export function adminSaveRecruit(patch: {
   cycle?: Partial<RecruitCycleConfig>
   templates?: Partial<RecruitTemplates>
 }) {
-  return apiRequest<{ cycle: RecruitCycleConfig; templates: RecruitTemplates; phase: RecruitPhase }>(
+  return apiRequest<{ cycle: RecruitCycleConfig; templates: RecruitTemplates }>(
     '/api/admin/recruit',
     jsonInit('PUT', patch),
   )
 }
 
-export function adminGetRecruitBoard() {
-  return apiRequest<RecruitBoard>('/api/admin/recruit/board')
+export function adminGetRecruitStats() {
+  return apiRequest<RecruitStats>('/api/admin/recruit/stats')
 }
 
-export function adminPreviewRecruitAuto(task: RecruitAutoTask, selectedIds: string[] = []) {
-  const search = new URLSearchParams({ task })
-  if (selectedIds.length > 0) search.set('selected', selectedIds.join(','))
-  return apiRequest<RecruitAutoPreview>(`/api/admin/recruit/auto?${search}`)
+export interface RunRecruitActionResult extends RecruitActionResult {
+  /** 这次动作在按钮上的名字 */
+  label: string
+  /** 接下来该做什么（后台直接提示，省得对着流程图数） */
+  next: { action: RecruitAction; label: string } | null
 }
 
-export interface RunRecruitAutoResult {
-  task: RecruitAutoTask
-  moved: number
-  mail: {
-    sent: number
-    failed: number
-    summary: string
-    results: Array<{ kind: string; sent: boolean; code: string; message: string; to: string }>
-  }
-  archive: { url: string; total: number } | null
-  preview: RecruitAutoPreview
-}
-
-export function adminRunRecruitAuto(body: {
-  task: RecruitAutoTask
-  selectedIds?: string[]
-  force?: boolean
-}) {
-  return apiRequest<RunRecruitAutoResult>(
-    '/api/admin/recruit/auto',
+/**
+ * 推进整届：开启报名、结束报名、确认名单、结束考试、关闭本届……
+ * 可用动作与校验规则在 `shared/recruit.ts` 的 `RECRUIT_ACTION_META`，前后端读同一张表。
+ */
+export function adminRunRecruitAction(body: { action: RecruitAction; selectedIds?: string[] }) {
+  return apiRequest<RunRecruitActionResult>(
+    '/api/admin/recruit/actions',
     jsonInit('POST', body),
-    { timeoutMs: 120_000 },
+    { timeoutMs: 180_000 },
+  )
+}
+
+export function adminListCheckinCodes() {
+  return apiRequest<{ codes: RecruitCheckinCodeMap }>('/api/admin/recruit/checkin-codes')
+}
+
+/**
+ * 签发某阶段的签到二维码。**会自动作废该阶段旧码** ——
+ * 二维码会被拍照转发，重发往往正是因为旧码泄了，两张都有效等于作废动作白做。
+ */
+export function adminIssueCheckinCode(stage: CheckinStage, ttlHours?: number) {
+  return apiRequest<{ code: NonNullable<RecruitCheckinCodeMap[CheckinStage]>; url: string }>(
+    '/api/admin/recruit/checkin-codes',
+    jsonInit('POST', ttlHours ? { stage, ttlHours } : { stage }),
+  )
+}
+
+export function adminRevokeCheckinCode(stage?: CheckinStage) {
+  return apiRequest<{ revoked: number }>(
+    '/api/admin/recruit/checkin-codes/revoke',
+    jsonInit('POST', stage ? { stage } : {}),
   )
 }
 
@@ -430,106 +413,6 @@ export interface MailLogRow {
 
 export function adminGetRecruitMails(limit = 200) {
   return apiRequest<{ logs: MailLogRow[] }>(`/api/admin/recruit/mails?limit=${limit}`)
-}
-
-// ===== 招新（后台：考试场次与签到二维码） =====
-
-/** 后台看到的场次：比契约多出派生称呼、时间文本与到场人数 */
-export interface AdminSession {
-  id: string
-  stage: CheckinStage
-  name: string
-  startsAt: string
-  endsAt: string
-  place: string
-  note: string
-  sortOrder: number
-  /** 场次称呼（没填名字时按该阶段序号兜底） */
-  label: string
-  stageLabel: string
-  /** 时间文本，如「2026 年 10 月 8 日 14:00–16:00」 */
-  timeText: string
-  checkinCount: number
-}
-
-/** 仍有效的签到二维码（同一场次至多一张） */
-export interface AdminCheckinCode {
-  sessionId: string
-  stage: string
-  sessionLabel: string
-  expiresAt: string
-  url: string
-  createdBy: string
-  createdAt: string
-}
-
-export interface AdminSessionsPayload {
-  sessions: AdminSession[]
-  codes: AdminCheckinCode[]
-}
-
-export function adminListSessions() {
-  return apiRequest<AdminSessionsPayload>('/api/admin/recruit/sessions')
-}
-
-export interface SessionInput {
-  stage: CheckinStage
-  name?: string
-  startsAt: string
-  endsAt?: string
-  place?: string
-  note?: string
-  sortOrder?: number
-}
-
-export function adminCreateSession(body: SessionInput) {
-  return apiRequest<{ session: AdminSession }>(
-    '/api/admin/recruit/sessions',
-    jsonInit('POST', body),
-  )
-}
-
-export function adminUpdateSession(id: string, body: Partial<SessionInput>) {
-  return apiRequest<{ session: AdminSession }>(
-    `/api/admin/recruit/sessions/${encodeURIComponent(id)}`,
-    jsonInit('PUT', body),
-  )
-}
-
-export function adminDeleteSession(id: string) {
-  return apiRequest<{ id: string }>(
-    `/api/admin/recruit/sessions/${encodeURIComponent(id)}`,
-    jsonInit('DELETE'),
-  )
-}
-
-export interface IssuedCheckinCode {
-  token: string
-  expiresAt: string
-  /** 二维码里要编码的绝对地址 */
-  url: string
-  sessionId: string
-  stage: CheckinStage
-  sessionLabel: string
-}
-
-/**
- * 签发该场次的签到二维码。**会把该场旧码一并作废**（同一场次至多一张有效码），
- * 因为二维码会被拍照转发，重发往往正是因为旧码泄了。
- */
-export function adminIssueCheckinToken(sessionId: string, ttlHours?: number) {
-  return apiRequest<IssuedCheckinCode>(
-    `/api/admin/recruit/sessions/${encodeURIComponent(sessionId)}/checkin-token`,
-    jsonInit('POST', ttlHours ? { ttlHours } : {}),
-  )
-}
-
-/** 作废签到二维码：给 sessionId 只作废那一场，否则作废全部 */
-export function adminRevokeCheckinTokens(sessionId?: string) {
-  return apiRequest<{ revoked: number }>(
-    '/api/admin/recruit/checkin-tokens/revoke',
-    jsonInit('POST', sessionId ? { sessionId } : {}),
-  )
 }
 
 // ===== 招新（后台：报名明细） =====

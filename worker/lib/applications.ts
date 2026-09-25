@@ -8,10 +8,23 @@
  * 列名只来自本文件的常量表，不接受任何外部输入拼 SQL。
  */
 
-import type { RecruitResult, RecruitStage } from '../../shared/recruit'
+import type { CheckinStage, RecruitResult, RecruitStage } from '../../shared/recruit'
 import type { Application, ApplicationSource } from '../../shared/types'
 import type { Env } from '../env'
 import { randomId } from './crypto'
+
+/**
+ * 阶段 → 签到时间列名。
+ * 签到、缺考判定、批量补签三处都要用，放在仓储这里，避免各文件抄一份。
+ */
+export const CHECKIN_COLUMN: Record<
+  CheckinStage,
+  'writtenCheckinAt' | 'interviewCheckinAt' | 'defenseCheckinAt'
+> = {
+  written: 'writtenCheckinAt',
+  interview: 'interviewCheckinAt',
+  defense: 'defenseCheckinAt',
+}
 
 /** 含邀请凭证的内部记录 —— 凭证是密权，只给管理员/发信逻辑用，不下发学生端 */
 export interface ApplicationRecord extends Application {
@@ -35,10 +48,7 @@ const COLUMNS: ReadonlyArray<readonly [keyof ApplicationRecord, string]> = [
   ['writtenCheckinAt', 'written_checkin_at'],
   ['interviewCheckinAt', 'interview_checkin_at'],
   ['defenseCheckinAt', 'defense_checkin_at'],
-  // 签到落在哪一场（开放参加制：同学任选一场，后台据此按场次统计到场）+ 报名来源
-  ['writtenSessionId', 'written_session_id'],
-  ['interviewSessionId', 'interview_session_id'],
-  ['defenseSessionId', 'defense_session_id'],
+  // 报名来源：web 官网自助提交 / manual 管理员补录
   ['source', 'source'],
   ['writtenScore', 'written_score'],
   ['interviewScore', 'interview_score'],

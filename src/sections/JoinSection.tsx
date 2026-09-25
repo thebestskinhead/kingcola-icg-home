@@ -10,7 +10,6 @@ import {
   studentLogout,
   studentMe,
   submitApplication,
-  type RecruitSchedule,
   type RecruitStatus,
 } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
@@ -73,13 +72,14 @@ export function JoinSection({ site }: { site: SiteConfig }) {
   const sso = useSsoTarget()
   const ssoReady = isSsoReady(sso)
 
-  /** 本轮招新的时间窗与状态（后台「招新周期」维护） */
+  /** 本届招新状态（后台点「开启报名 / 结束报名」决定，没有任何时间窗） */
   const [cycle, setCycle] = useState<RecruitStatus | null>(null)
 
   const [auth, setAuth] = useState<AuthState>('checking')
   const [identity, setIdentity] = useState<Identity | null>(null)
   const [application, setApplication] = useState<Application | null>(null)
-  const [schedule, setSchedule] = useState<RecruitSchedule | null>(null)
+  /** 他此刻该进的群（报名阶段为空） */
+  const [group, setGroup] = useState({ label: '', number: '' })
   const [inviteUrl, setInviteUrl] = useState('')
   const [appLoading, setAppLoading] = useState(false)
 
@@ -96,7 +96,7 @@ export function JoinSection({ site }: { site: SiteConfig }) {
     try {
       const result = await myApplication()
       setApplication(result.application)
-      setSchedule(result.schedule)
+      setGroup({ label: result.groupLabel, number: result.group })
       setInviteUrl(result.inviteUrl ?? '')
     } catch {
       // 查询失败不阻断页面：表单照常可用，提交时后端还会再查一次
@@ -116,6 +116,7 @@ export function JoinSection({ site }: { site: SiteConfig }) {
       } else {
         setIdentity(null)
         setApplication(null)
+        setGroup({ label: '', number: '' })
         setInviteUrl('')
         setAuth('anonymous')
       }
@@ -204,9 +205,11 @@ export function JoinSection({ site }: { site: SiteConfig }) {
       setFile(null)
       setReplaceConfirmed(false)
       toast.success(replaceConfirmed ? '报名表已替换' : '报名表已提交，我们会尽快安排笔试', {
-        description: replaceConfirmed ? '原来的材料已被新的一份取代' : '笔试与面试安排会同时发到你的邮箱，请留意查收',
+        description: replaceConfirmed
+          ? '原来的材料已被新的一份取代'
+          : '笔试通知会发到你的邮箱，具体安排见邮件里的 QQ 群',
       })
-      // 顺带把最新的安排取回来（后台可能刚更新了笔试时间）
+      // 顺带把最新的进度与群号取回来
       await loadApplication()
     } catch (error) {
       if (error instanceof ApiError && error.code === 'REPLACE_CONFIRM') {
@@ -221,29 +224,22 @@ export function JoinSection({ site }: { site: SiteConfig }) {
     }
   }
 
-  // ===== 报名通道是否开放：由招新周期自动派生（时间窗内 且 尚未确认笔试名单） =====
+  // ===== 报名通道是否开放：完全由后台的「开启报名 / 结束报名」决定 =====
   const applyOpen = cycle?.applyOpen ?? false
-  const phase = cycle?.phase ?? 'not_configured'
+  const gate = cycle?.gate ?? 'not_open'
   const hasApplication = Boolean(application)
 
-  /** 右侧面板的三种「不能报名」形态 */
+  /** 右侧面板的「不能报名」形态：还没开 / 已截止 */
   const closedNotice = (() => {
-    if (phase === 'closed') {
-      return { title: '本届招新已结束', desc: '感谢关注，欢迎下一轮招新再来。' }
-    }
-    if (phase === 'upcoming') {
-      return {
-        title: '报名尚未开始',
-        desc: cycle?.applyStartText ? `报名开放时间：${cycle.applyStartText}` : '招新时间即将公布。',
-      }
-    }
-    if (phase === 'in_progress') {
+    if (gate === 'closed') {
       return {
         title: '报名已截止',
         desc: '本次报名通道已关闭；已报名的同学登录后可继续查看自己的进度。',
       }
     }
-    return { title: '招新时间尚未公布', desc: '请稍后再来，或先通过页脚邮箱与我们取得联系。' }
+    return cycle?.state === 'prepare'
+      ? { title: '报名尚未开始', desc: '本届招新即将开始，请留意后续通知。' }
+      : { title: '招新尚未开始', desc: '请稍后再来，或先通过页脚邮箱与我们取得联系。' }
   })()
 
   return (
@@ -333,17 +329,8 @@ export function JoinSection({ site }: { site: SiteConfig }) {
             <>
               <ApplicationProgress
                 application={application}
-                schedule={
-                  schedule ?? {
-                    writtenAt: '',
-                    writtenPlace: '',
-                    interviewAt: '',
-                    interviewPlace: '',
-                    defenseStart: '',
-                    defenseEnd: '',
-                    onboardDeadline: '',
-                  }
-                }
+                groupLabel={group.label}
+                group={group.number}
                 inviteUrl={inviteUrl}
               />
               <div className="mt-5 flex items-center justify-between border-t border-border pt-4 text-xs text-muted-foreground">

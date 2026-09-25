@@ -72,14 +72,10 @@ SSO_AUTHORIZE_BASE = ""
 SSO_CLIENT_ID = "kingcola"
 
 # ---------------------------------------------------------------------------
-# 定时兜底：招新的两件「不做会漏」的事（见 worker/lib/recruit-auto.ts 的 runRecruitScheduled）
-#   1. 笔试结束过了宽限期仍未签到的同学 → 标记未参加
-#   2. 全部确认完毕或已过转正截止 → 导出存档并关闭本届
-# cron 表达式为 UTC，`0 16 * * *` = 北京时间每天 00:00。
-# 两项都可在后台「招新周期」里关掉；本地开发用 `wrangler dev --test-scheduled` 手动触发。
+# 刻意没有 [triggers] crons：招新的每一次阶段开、关都由管理员在后台点按钮决定
+# （见 shared/recruit.ts 的 RECRUIT_ACTION_META），没有「到点自动关闭」这种事。
+# 缺考也在「结束笔试/面试/答辩」这个动作里一次性标完，不需要定时扫。
 # ---------------------------------------------------------------------------
-[triggers]
-crons = ["0 16 * * *"]
 
 [observability]
 enabled = true

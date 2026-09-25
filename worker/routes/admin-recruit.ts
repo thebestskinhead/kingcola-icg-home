@@ -1,36 +1,45 @@
 /**
  * 招新模块的后台接口（全部需要管理员会话）。
  *
- *   GET  /api/admin/recruit                周期配置 + 邮件模板 + 存档 + 当前阶段
- *   PUT  /api/admin/recruit                保存周期 / 模板
- *   GET  /api/admin/recruit/board          招新看板：漏斗、待办数量
- *   GET  /api/admin/recruit/auto?task=…    自动流程预览（只算不改）
- *   POST /api/admin/recruit/auto           执行自动流程（改状态 + 发信 + 写日志）
- *   GET  /api/admin/recruit/export         导出当前名单 CSV
- *   GET  /api/admin/recruit/mails          发信日志
+ *   GET    /api/admin/recruit                    整届状态 + 名称 + 群号 + 邮件模板
+ *   PUT    /api/admin/recruit                    保存名称 / 群号 / 模板
+ *   GET    /api/admin/recruit/stats               漏斗与状态细分（顶部摘要条）
+ *   POST   /api/admin/recruit/actions              推进整届：开启报名、确认名单、关闭本届……（状态机）
+ *   GET    /api/admin/recruit/checkin-codes        三个阶段各自的签到二维码
+ *   POST   /api/admin/recruit/checkin-codes        签发（重发会自动作废该阶段旧码）
+ *   POST   /api/admin/recruit/checkin-codes/revoke 作废
+ *   GET    /api/admin/recruit/export               导出当前筛选的名单 CSV
+ *   GET    /api/admin/recruit/mails                发信日志
  *
- * 周期与模板存 D1 `site_config['recruit']`（JSON 合并默认值，新增配置项不需要迁移）。
+ * 招新没有任何时间字段：阶段推进全靠 `POST /actions`，实现与校验在 `lib/recruit-cycle.ts`。
+ * 动作清单与文案不另开接口 —— 前端直接引 `shared/recruit.ts` 的 `RECRUIT_ACTION_META`，两边同一份。
  */
 
 import {
   applicationLabel,
   buildCsv,
+  checkinTokenPath,
   isApplicationFinished,
-  isRecruitModuleOpen,
+  isCheckinStage,
+  isRecruitAction,
   isRecruitResult,
-  recruitNotice,
-  recruitPhase,
-  RECRUIT_AUTO_META,
-  RECRUIT_AUTO_TASKS,
+  RECRUIT_ACTION_META,
   RECRUIT_STAGE_LABELS,
   RECRUIT_STAGES,
+  RECRUIT_STATE_LABELS,
   unknownTemplateVariables,
-  type RecruitAutoTask,
-  type RecruitBoard,
+  validateQQGroups,
+  type CheckinStage,
+  type RecruitAction,
+  type RecruitActionResult,
+  type RecruitCheckinCodeMap,
+  type RecruitCheckinCodeView,
   type RecruitCycleConfig,
+  type RecruitCycleState,
   type RecruitMailKind,
   type RecruitResult,
   type RecruitStage,
+  type RecruitStats,
   type RecruitTemplates,
 } from '../../shared/recruit'
 import {
@@ -40,10 +49,18 @@ import {
   type ApplicationRecord,
 } from '../lib/applications'
 import { clientIp, fail, ok, readJsonBody } from '../lib/http'
-import { buildAutoPreview, executeAutoTask } from '../lib/recruit-auto'
+import {
+  issueCheckinToken,
+  listActiveCheckinTokens,
+  normalizeTtlHours,
+  revokeCheckinTokens,
+  type CheckinTokenRecord,
+} from '../lib/recruit-checkin'
 import { getRecruitSettings, saveRecruitSettings } from '../lib/recruit-config'
+import { RecruitActionError, runRecruitAction } from '../lib/recruit-cycle'
 import { writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
+import { resolveRuntimeConfig } from './config'
 
 function actorOf(ctx: RequestContext): string {
   return ctx.admin?.username ?? '(unknown)'
@@ -53,11 +70,10 @@ function requestMeta(ctx: RequestContext) {
   return { ip: clientIp(ctx.request), ua: ctx.request.headers.get('user-agent') ?? '' }
 }
 
-// ===== 周期与模板 =====
+// ===== 整届状态与设置 =====
 
 export async function getRecruitSettingsRoute(ctx: RequestContext): Promise<Response> {
   const settings = await getRecruitSettings(ctx.env)
-  const phase = recruitPhase(settings.cycle)
 
   // 模板里写错的变量要在后台直接提示出来，避免发出去才发现少了内容
   const unknownVariables = Object.fromEntries(
@@ -67,15 +83,7 @@ export async function getRecruitSettingsRoute(ctx: RequestContext): Promise<Resp
     ]),
   )
 
-  return ok({
-    cycle: settings.cycle,
-    templates: settings.templates,
-    phase,
-    /** 招新模块现在对管理员是否开放（非招新期收起） */
-    moduleOpen: isRecruitModuleOpen(phase),
-    notice: recruitNotice(settings.cycle),
-    unknownVariables,
-  })
+  return ok({ cycle: settings.cycle, templates: settings.templates, unknownVariables })
 }
 
 interface SaveRecruitBody {
@@ -87,30 +95,28 @@ export async function updateRecruitSettings(ctx: RequestContext): Promise<Respon
   const body = await readJsonBody<SaveRecruitBody>(ctx.request)
   if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
 
-  if (body.cycle) {
-    const cycle = body.cycle
-    const start = (cycle.applyStart ?? '').trim()
-    const end = (cycle.applyEnd ?? '').trim()
-    if (start && end && end <= start) {
-      return fail(400, 'VALIDATION_FAILED', '报名截止时间必须晚于开始时间')
-    }
-    if (cycle.absentGraceHours !== undefined && Number(cycle.absentGraceHours) < 0) {
-      return fail(400, 'VALIDATION_FAILED', '缺考宽限期不能是负数')
-    }
+  // 整届状态只能由动作接口推进，这里刻意不接受 state ——
+  // 否则「在设置页点一下保存」就可能把流程跳到别的阶段，状态机形同虚设。
+  const cycle: Partial<RecruitCycleConfig> = { ...(body.cycle ?? {}) }
+  delete cycle.state
+
+  if (cycle.groups) {
+    const invalid = validateQQGroups(cycle.groups)
+    if (invalid) return fail(400, 'VALIDATION_FAILED', invalid)
   }
 
   const saved = await saveRecruitSettings(ctx.env, {
-    cycle: body.cycle,
+    cycle: body.cycle ? cycle : undefined,
     templates: body.templates as Partial<RecruitTemplates> | undefined,
   })
-  const phase = recruitPhase(saved.cycle)
 
   await writeAudit(ctx.env, {
     actor: actorOf(ctx),
     action: 'save_recruit_config',
     resource: 'recruit',
     detail: [
-      body.cycle ? `cycle=${saved.cycle.name || '(未命名)'} phase=${phase}` : '',
+      body.cycle ? `cycle=${saved.cycle.name || '(未命名)'}` : '',
+      cycle.groups ? `groups=${Object.values(saved.cycle.groups).join('/')}` : '',
       body.templates ? 'templates' : '',
     ]
       .filter(Boolean)
@@ -118,16 +124,14 @@ export async function updateRecruitSettings(ctx: RequestContext): Promise<Respon
     ...requestMeta(ctx),
   })
 
-  return ok({ cycle: saved.cycle, templates: saved.templates, phase })
+  return ok({ cycle: saved.cycle, templates: saved.templates })
 }
 
-// ===== 看板 =====
-
-export async function getRecruitBoard(ctx: RequestContext): Promise<Response> {
-  const [settings, records, previews] = await Promise.all([
+/** 顶部摘要条：漏斗 + 状态细分（每进一次页面拉一次，量级最多几百条） */
+export async function getRecruitStats(ctx: RequestContext): Promise<Response> {
+  const [settings, records] = await Promise.all([
     getRecruitSettings(ctx.env),
     listAllApplications(ctx.env),
-    Promise.all(RECRUIT_AUTO_TASKS.map((task) => buildAutoPreview(ctx.env, task))),
   ])
 
   const funnel = Object.fromEntries(RECRUIT_STAGES.map((stage) => [stage, 0])) as Record<
@@ -144,86 +148,172 @@ export async function getRecruitBoard(ctx: RequestContext): Promise<Response> {
     if (record.stage === 'onboard' && record.result === 'passed') members += 1
   }
 
-  const pending = Object.fromEntries(
-    RECRUIT_AUTO_TASKS.map((task, index) => [task, previews[index]?.items.length ?? 0]),
-  ) as Record<RecruitAutoTask, number>
-
-  const board: RecruitBoard = {
+  const stats: RecruitStats = {
+    state: settings.cycle.state,
+    stateLabel: RECRUIT_STATE_LABELS[settings.cycle.state],
+    cycleName: settings.cycle.name,
     funnel,
     byLabel,
-    pending,
     total: records.length,
     members,
-    cycleName: settings.cycle.name,
-    phase: recruitPhase(settings.cycle),
   }
-
-  return ok(board)
+  return ok(stats)
 }
 
-// ===== 自动流程 =====
+// ===== 推进整届（状态机） =====
 
-const AUTO_TASKS = new Set<string>(RECRUIT_AUTO_TASKS)
-
-function parseSelected(value: string | null): string[] {
-  return (value ?? '')
-    .split(',')
-    .map((id) => id.trim())
-    .filter(Boolean)
-}
-
-export async function previewRecruitAuto(ctx: RequestContext): Promise<Response> {
-  const task = (ctx.url.searchParams.get('task') ?? '').trim()
-  if (!AUTO_TASKS.has(task)) return fail(400, 'INVALID_TASK', `未知的自动任务：${task}`)
-
-  const preview = await buildAutoPreview(ctx.env, task as RecruitAutoTask, {
-    selectedIds: parseSelected(ctx.url.searchParams.get('selected')),
-  })
-  return ok(preview)
-}
-
-interface RunAutoBody {
-  task?: string
+interface ActionBody {
+  action?: string
+  /** 需要勾选名单的动作（确认笔试名单 / 生成面试名单 / 录取 / 转正） */
   selectedIds?: string[]
-  /** 忽略截止时间立即关闭（管理员手动关闭本届） */
-  force?: boolean
 }
 
-export async function runRecruitAuto(ctx: RequestContext): Promise<Response> {
-  const body = await readJsonBody<RunAutoBody>(ctx.request)
+export async function runRecruitActionRoute(ctx: RequestContext): Promise<Response> {
+  const body = await readJsonBody<ActionBody>(ctx.request)
   if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
 
-  const task = (body.task ?? '').trim()
-  if (!AUTO_TASKS.has(task)) return fail(400, 'INVALID_TASK', `未知的自动任务：${task}`)
-  const typed = task as RecruitAutoTask
+  const action = (body.action ?? '').trim()
+  if (!isRecruitAction(action)) return fail(400, 'INVALID_ACTION', `未知的动作：${action}`)
 
-  // 预览为空且被 block 时直接回错误，避免「点了执行但什么都没发生」
-  const preview = await buildAutoPreview(ctx.env, typed, {
-    selectedIds: body.selectedIds,
-    force: body.force,
-  })
-  if (preview.blocked && preview.items.length === 0) {
-    return fail(409, 'BLOCKED', preview.blocked)
+  const selectedIds = (body.selectedIds ?? []).map((id) => String(id).trim()).filter(Boolean)
+  const runtime = await resolveRuntimeConfig(ctx)
+
+  let result: RecruitActionResult
+  try {
+    result = await runRecruitAction(
+      { env: ctx.env, origin: ctx.url.origin, actor: actorOf(ctx), mail: runtime.mail },
+      action,
+      selectedIds,
+    )
+  } catch (error) {
+    if (error instanceof RecruitActionError) return fail(409, error.code, error.message)
+    throw error
   }
 
-  const result = await executeAutoTask(ctx, typed, {
-    selectedIds: body.selectedIds,
-    force: body.force,
+  return ok({
+    ...result,
+    label: RECRUIT_ACTION_META[action].label,
+    next: nextActionOf(result.state),
+  })
+}
+
+/** 该状态下管理员接下来的「下一步」（后台直接提示，省得对着流程图数） */
+function nextActionOf(state: RecruitCycleState): { action: RecruitAction; label: string } | null {
+  const order: RecruitAction[] = [
+    'open_apply',
+    'end_apply',
+    'confirm_written',
+    'end_written',
+    'advance_written',
+    'end_interview',
+    'advance_interview',
+    'end_defense',
+    'advance_defense',
+  ]
+  for (const action of order) {
+    if (RECRUIT_ACTION_META[action].from.includes(state)) {
+      return { action, label: RECRUIT_ACTION_META[action].label }
+    }
+  }
+  return state === 'dormant' ? null : { action: 'close_cycle', label: RECRUIT_ACTION_META.close_cycle.label }
+}
+
+// ===== 签到二维码（只绑阶段） =====
+
+function toCodeView(record: CheckinTokenRecord, origin: string): RecruitCheckinCodeView {
+  return {
+    token: record.token,
+    stage: record.stage,
+    stageLabel: RECRUIT_STAGE_LABELS[record.stage],
+    url: `${origin.replace(/\/+$/, '')}${checkinTokenPath(record.token)}`,
+    expiresAt: record.expiresAt,
+    createdBy: record.createdBy,
+    createdAt: record.createdAt,
+  }
+}
+
+/** 三个阶段各自的当前有效码（没有就是 null，前端据此显示「生成」按钮） */
+export async function listCheckinCodes(ctx: RequestContext): Promise<Response> {
+  const active = await listActiveCheckinTokens(ctx.env)
+  const codes = {} as RecruitCheckinCodeMap
+  for (const stage of ['written', 'interview', 'defense'] as CheckinStage[]) {
+    const record = active[stage]
+    codes[stage] = record ? toCodeView(record, ctx.url.origin) : null
+  }
+  return ok({ codes }, { headers: { 'cache-control': 'no-store' } })
+}
+
+interface IssueCodeBody {
+  stage?: string
+  /** 有效期（小时），不传用默认值 */
+  ttlHours?: number
+}
+
+export async function issueCheckinCode(ctx: RequestContext): Promise<Response> {
+  const body = await readJsonBody<IssueCodeBody>(ctx.request)
+  if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
+
+  const stageRaw = String(body.stage ?? '').trim()
+  if (!isCheckinStage(stageRaw)) return fail(400, 'INVALID_STAGE', '签到阶段只支持笔试 / 面试 / 答辩')
+  const stage = stageRaw
+
+  const { cycle } = await getRecruitSettings(ctx.env)
+  if (!isStageInProgress(cycle.state, stage)) {
+    return fail(
+      409,
+      'STAGE_NOT_ACTIVE',
+      `当前是「${RECRUIT_STATE_LABELS[cycle.state]}」，${RECRUIT_STAGE_LABELS[stage]}还没开始或已经走完，不需要签到二维码`,
+    )
+  }
+
+  const record = await issueCheckinToken(ctx.env, {
+    stage,
+    ttlHours: body.ttlHours,
+    actor: actorOf(ctx),
+  })
+  const view = toCodeView(record, ctx.url.origin)
+
+  await writeAudit(ctx.env, {
+    actor: actorOf(ctx),
+    action: 'issue_checkin_code',
+    resource: 'applications',
+    targetId: stage,
+    detail: `签发${RECRUIT_STAGE_LABELS[stage]}签到二维码，有效 ${normalizeTtlHours(body.ttlHours)} 小时（该阶段旧码已作废）`,
+    ...requestMeta(ctx),
   })
 
-  return ok({
-    task: result.task,
-    moved: result.moved,
-    mail: {
-      sent: result.mail.sent,
-      failed: result.mail.failed,
-      summary: result.mail.summary,
-      /** 只回前 50 条明细，够后台列出来看，也不至于把响应撑爆 */
-      results: result.mail.results.slice(0, 50),
-    },
-    archive: result.archive ?? null,
-    preview: result.preview,
+  return ok({ code: view, url: view.url })
+}
+
+interface RevokeCodeBody {
+  stage?: string
+}
+
+export async function revokeCheckinCode(ctx: RequestContext): Promise<Response> {
+  const body = await readJsonBody<RevokeCodeBody>(ctx.request)
+  const stageRaw = String(body?.stage ?? '').trim()
+  if (stageRaw && !isCheckinStage(stageRaw)) return fail(400, 'INVALID_STAGE', '签到阶段不合法')
+
+  const revoked = await revokeCheckinTokens(ctx.env, {
+    stage: stageRaw ? (stageRaw as CheckinStage) : null,
+    actor: actorOf(ctx),
   })
+
+  await writeAudit(ctx.env, {
+    actor: actorOf(ctx),
+    action: 'revoke_checkin_code',
+    resource: 'applications',
+    targetId: stageRaw || 'all',
+    detail: `作废 ${revoked} 张签到二维码`,
+    ...requestMeta(ctx),
+  })
+
+  return ok({ revoked })
+}
+
+/** 该阶段现在是否正在进行（或刚结束待收尾）—— 只有这两个状态才可能用到签到码 */
+function isStageInProgress(state: RecruitCycleState, stage: CheckinStage): boolean {
+  return state === stage || state === `${stage}_review`
 }
 
 // ===== 导出与日志 =====
@@ -274,12 +364,4 @@ export async function getRecruitMails(ctx: RequestContext): Promise<Response> {
   const limit = Number(ctx.url.searchParams.get('limit') ?? 200)
   const logs = await listMailLogs(ctx.env, { limit })
   return ok({ logs })
-}
-
-/** 自动流程任务清单（前端渲染卡片用，避免前端硬编码） */
-export async function getRecruitAutoTasks(ctx: RequestContext): Promise<Response> {
-  void ctx
-  return ok({
-    tasks: RECRUIT_AUTO_TASKS.map((task) => ({ id: task, ...RECRUIT_AUTO_META[task] })),
-  })
 }

@@ -1,16 +1,20 @@
 /**
- * 招新报名的**学生侧**接口 + 公开的周期状态。
+ * 招新报名的**学生侧**接口 + 公开的招新状态。
  *
- *   GET  /api/public/recruit               本轮招新的时间窗与文案（报名页据此显隐表单）
- *   POST /api/applications                 提交报名表（需报名学生会话，multipart）
- *   GET  /api/applications/me              查看自己的报名进度
- *   GET  /api/applications/invite/:token   打开邀请函（凭证即密权，无需登录）
- *   POST /api/applications/invite/:token   确认加入，写入成员表
- *   POST /api/applications/checkin         扫码签到（当前空实现：填姓名 + 学号即可）
+ *   GET  /api/public/recruit                   当前招新状态与文案（报名页据此显隐表单）
+ *   POST /api/applications                     提交报名表（需报名学生会话，multipart）
+ *   GET  /api/applications/me                  查看自己的报名进度
+ *   GET  /api/applications/invite/:token       打开邀请函（凭证即密权，无需登录）
+ *   POST /api/applications/invite/:token       确认加入，写入成员表
+ *   GET  /api/applications/checkin/:token      签到页要显示的文案（凭证 = 阶段 + 有效期）
+ *   POST /api/applications/checkin/:token      扫码签到（填姓名 + 学号即可）
  *
  * 身份由教务网登录后的 `kc_student` 会话背书 —— 学号与姓名一律取自会话，
  * 不接受客户端传入，避免有人替别人报名。**签到例外**：签到页是线下扫码打开的，
- * 同学手上不一定有登录态，所以按「姓名 + 学号与报名记录一致」放行（这是刻意的空实现）。
+ * 同学手上不一定有登录态，所以按「姓名 + 学号与报名记录一致」放行，
+ * 外加二维码自带的凭证（token 只绑阶段、带有效期、可随时作废）。
+ *
+ * 报名通道开不开，取决于整届状态（`state === 'apply'`），没有任何时间参与判断。
  */
 
 import { RESOURCES, formatLimit } from '../../shared/resources'
@@ -18,25 +22,27 @@ import {
   APPLICATION_DOC_LIMIT,
   APPLICATION_DOC_SCOPE,
   applicationDocFileName,
+  applyGate,
   checkinEligibility,
+  groupKeyForRecord,
   isApplyOpen,
   isCheckinTokenUsable,
   isInviteUsable,
   normalizeName,
   recruitNotice,
-  recruitPhase,
+  RECRUIT_GROUP_LABELS,
   RECRUIT_STAGE_LABELS,
-  sessionLabel,
-  sessionsOfStage,
-  sessionTimeText,
+  RECRUIT_STATE_LABELS,
   validateApplicationForm,
   validateCheckin,
   type CheckinStage,
+  type RecruitProgressInfo,
+  type RecruitPublicStatus,
   type RecruitResult,
 } from '../../shared/recruit'
-import { cnTimeToText, isoToCnTime } from '../../shared/time'
 import { MEMBER_ROLES, type Application } from '../../shared/types'
 import {
+  CHECKIN_COLUMN,
   createApplication,
   getApplicationByInviteToken,
   getApplicationByStudentId,
@@ -44,19 +50,12 @@ import {
   updateApplication,
 } from '../lib/applications'
 import { clientIp, fail, ok, readJsonBody } from '../lib/http'
+import { getCheckinToken } from '../lib/recruit-checkin'
 import { getRecruitSettings } from '../lib/recruit-config'
-import { getCheckinToken, getSession, listSessions, SESSION_FIELD } from '../lib/recruit-sessions'
 import { createEntity, getSiteConfig, writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
 import { deleteStoredFile, getStorage, storageReady } from '../lib/storage'
 import { buildObjectKey, sniffDocument } from '../lib/uploads'
-
-/** 签到时间写入哪一列 */
-const CHECKIN_COLUMN: Record<CheckinStage, 'writtenCheckinAt' | 'interviewCheckinAt' | 'defenseCheckinAt'> = {
-  written: 'writtenCheckinAt',
-  interview: 'interviewCheckinAt',
-  defense: 'defenseCheckinAt',
-}
 
 function identityOf(ctx: RequestContext): { studentId: string; name: string } | null {
   const student = ctx.student
@@ -71,29 +70,24 @@ function requestMeta(ctx: RequestContext) {
 // ===== 公开：本届招新状态 =====
 
 /**
- * 报名页要用到的全部时间信息。刻意不带邮件模板等内容 —— 那是管理端数据。
+ * 报名页要用到的招新状态。刻意不带邮件模板与群号 —— 那是管理端与收信人自己的信息。
  * 与 bootstrap 一样可被短缓存（30 秒），招新状态变化本来就不频繁。
  */
 export async function getRecruitStatus(ctx: RequestContext): Promise<Response> {
-  const settings = await getRecruitSettings(ctx.env)
-  const { cycle } = settings
-  const phase = recruitPhase(cycle)
+  const { cycle } = await getRecruitSettings(ctx.env)
 
-  return ok(
-    {
-      phase,
-      name: cycle.name,
-      applyStart: cycle.applyStart,
-      applyEnd: cycle.applyEnd,
-      applyStartText: cnTimeToText(cycle.applyStart),
-      applyEndText: cnTimeToText(cycle.applyEnd),
-      /** 报名通道是否开放 */
-      applyOpen: isApplyOpen(cycle),
-      /** 给「加入我们」页面的说明 */
-      notice: recruitNotice(cycle),
-    },
-    { headers: { 'cache-control': 'public, max-age=30' } },
-  )
+  const status: RecruitPublicStatus = {
+    state: cycle.state,
+    stateLabel: RECRUIT_STATE_LABELS[cycle.state],
+    /** 能不能提交报名表 */
+    applyOpen: isApplyOpen(cycle.state),
+    /** 开放 / 还没开 / 已截止：三种情况文案完全不同，交给契约判 */
+    gate: applyGate(cycle.state),
+    name: cycle.name,
+    notice: recruitNotice(cycle),
+  }
+
+  return ok(status, { headers: { 'cache-control': 'public, max-age=30' } })
 }
 
 // ===== 提交报名表 =====
@@ -103,7 +97,7 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
   if (!me) return fail(401, 'UNAUTHENTICATED', '登录状态已失效，请重新用教务网账号登录')
 
   const settings = await getRecruitSettings(ctx.env)
-  if (!isApplyOpen(settings.cycle)) {
+  if (!isApplyOpen(settings.cycle.state)) {
     return fail(403, 'RECRUIT_CLOSED', recruitNotice(settings.cycle))
   }
 
@@ -115,21 +109,20 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
 
   // 一位同学一条记录。已报过名不直接拒绝，而是要求**显式确认替换**：
   // 覆盖材料是不可逆的，不能因为表单多点了一下就把人家交上来的东西悄悄盖掉。
-  // 替换窗口与报名通道同一条规则（isApplyOpen）—— 确认笔试名单后材料就锁死。
+  // 替换窗口与报名通道同一条规则（isApplyOpen）—— 报名一结束材料就锁死。
   const replace = ctx.url.searchParams.get('replace') === 'true'
   const existing = await getApplicationByStudentId(ctx.env, me.studentId)
   if (existing) {
     if (!replace) {
-      const at = isoToCnTime(existing.createdAt) || '之前'
       return fail(
         409,
         'REPLACE_CONFIRM',
-        `你在 ${at} 已提交过报名表${existing.fileName ? `（${existing.fileName}）` : ''}。再提交一次会替换掉原来的材料，请确认后再交`,
+        `你之前已提交过报名表${existing.fileName ? `（${existing.fileName}）` : ''}。再提交一次会替换掉原来的材料，请确认后再交`,
       )
     }
-    // isApplyOpen 已经把「确认名单后」拦在前面，这里是双保险（万一有人手动把人推进了下一阶段）
+    // isApplyOpen 已经把「报名结束」拦在前面，这里是双保险（万一有人手动把人推进了下一阶段）
     if (existing.stage !== 'apply') {
-      return fail(409, 'MATERIAL_LOCKED', '笔试名单已确认，报名材料已锁定，无法替换；如确有需要请回复邮件联系我们')
+      return fail(409, 'MATERIAL_LOCKED', '报名已结束、材料已锁定，无法替换；如确有需要请回复邮件联系我们')
     }
   }
 
@@ -242,21 +235,15 @@ export async function myApplication(ctx: RequestContext): Promise<Response> {
     getApplicationByStudentId(ctx.env, me.studentId),
   ])
 
-  const cycle = settings.cycle
-  const base = {
-    phase: recruitPhase(cycle),
+  const { cycle } = settings
+  // 他此刻该进哪个群：报名阶段还没分群，所以是空的
+  const groupKey = record ? groupKeyForRecord(record.stage) : null
+  const base: RecruitProgressInfo = {
+    state: cycle.state,
     cycleName: cycle.name,
     notice: recruitNotice(cycle),
-    /** 各阶段的安排时间，进度页上要展示给同学 */
-    schedule: {
-      writtenAt: cnTimeToText(cycle.writtenAt),
-      writtenPlace: cycle.writtenPlace,
-      interviewAt: cnTimeToText(cycle.interviewAt),
-      interviewPlace: cycle.interviewPlace,
-      defenseStart: cnTimeToText(cycle.defenseStart),
-      defenseEnd: cnTimeToText(cycle.defenseEnd),
-      onboardDeadline: cnTimeToText(cycle.onboardDeadline),
-    },
+    groupLabel: groupKey ? RECRUIT_GROUP_LABELS[groupKey] : '',
+    group: groupKey ? cycle.groups[groupKey] : '',
   }
 
   if (!record) {
@@ -386,46 +373,31 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
   })
 }
 
-// ===== 扫码签到（凭证即密权：token 绑场次 + 带失效时间） =====
+// ===== 扫码签到（凭证即密权：token 只绑阶段 + 带失效时间） =====
 
 interface CheckinBody {
   name?: string
   studentId?: string
 }
 
-/** 凭证 → 场次。凭证无效、过期、已作废、场次已删，统一返回 null 由调用方按「无效」回应 */
-async function resolveCheckinTarget(
-  ctx: RequestContext,
-): Promise<{ stage: CheckinStage; sessionId: string; label: string; timeText: string } | null> {
+/** 凭证 → 阶段。凭证无效、过期、已作废统一返回 null，由调用方按「无效」回应 */
+async function resolveCheckinStage(ctx: RequestContext): Promise<CheckinStage | null> {
   const record = await getCheckinToken(ctx.env, ctx.params.token ?? '')
   if (!record || !isCheckinTokenUsable(record.expiresAt, record.revokedAt)) return null
-
-  const session = await getSession(ctx.env, record.sessionId)
-  if (!session) return null
-
-  // 场次名没填时按阶段内的序号兜底，所以要把同阶段的场次都取来定位自己
-  const siblings = sessionsOfStage(await listSessions(ctx.env), session.stage)
-  const index = Math.max(0, siblings.findIndex((item) => item.id === session.id))
-  return {
-    stage: session.stage,
-    sessionId: session.id,
-    label: sessionLabel(session, index),
-    timeText: sessionTimeText(session),
-  }
+  return record.stage
 }
 
 /**
  * 签到页提交的入口。
  *
  * 不要求登录态：同学在线下扫二维码进来，手上不一定有会话。
- * 凭证就是二维码里的 token（绑场次 + 带失效时间），再要求「姓名 + 学号」与报名记录一致。
+ * 凭证就是二维码里的 token（只绑阶段 + 带失效时间），再要求「姓名 + 学号」与报名记录一致。
  */
 export async function checkin(ctx: RequestContext): Promise<Response> {
-  const target = await resolveCheckinTarget(ctx)
-  if (!target) {
+  const stage = await resolveCheckinStage(ctx)
+  if (!stage) {
     return fail(404, 'CHECKIN_TOKEN_INVALID', '这个签到二维码不存在、已失效或已被作废，请找现场工作人员确认')
   }
-  const stage = target.stage
 
   const body = await readJsonBody<CheckinBody>(ctx.request)
   if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
@@ -454,23 +426,14 @@ export async function checkin(ctx: RequestContext): Promise<Response> {
 
   const column = CHECKIN_COLUMN[stage]
   if (record[column]) {
-    return ok({
-      already: true,
-      name: record.name,
-      stage,
-      at: record[column],
-      sessionId: record[SESSION_FIELD[stage]],
-      sessionLabel: target.label,
-    })
+    return ok({ already: true, name: record.name, stage, stageLabel: RECRUIT_STAGE_LABELS[stage], at: record[column] })
   }
 
   const now = new Date().toISOString()
-  // 签到即代表「来了」：阶段推进到当前环节、结果记为「已参加」（尚未出结果），
-  // 同时记下「签的是哪一场」，后台才能按场次统计到场人数。
+  // 签到即代表「来了」：阶段推进到当前环节、结果记为「已参加」（尚未出结果）。
   // 也覆盖「后台还没来得及把人推进到笔试就先开考了」的情况（eligibility = ahead）。
   await updateApplication(ctx.env, record.id, {
     [column]: now,
-    [SESSION_FIELD[stage]]: target.sessionId,
     stage,
     result: 'attended' as RecruitResult,
     stageChangedAt: now,
@@ -481,27 +444,20 @@ export async function checkin(ctx: RequestContext): Promise<Response> {
     action: `checkin_${stage}`,
     resource: 'applications',
     targetId: record.id,
-    detail: `${record.name}（${record.studentId}）${record.stage} → ${stage} · ${target.label}`,
+    detail: `${record.name}（${record.studentId}）${record.stage} → ${stage}`,
     ...requestMeta(ctx),
   })
 
-  return ok({
-    already: false,
-    name: record.name,
-    stage,
-    at: now,
-    sessionId: target.sessionId,
-    sessionLabel: target.label,
-  })
+  return ok({ already: false, name: record.name, stage, stageLabel: RECRUIT_STAGE_LABELS[stage], at: now })
 }
 
 /**
- * 签到页自己要渲染的文案（阶段名、场次时间地点都写在页面上）。
+ * 签到页自己要渲染的文案（只有阶段名与本届名称 —— 时间地点不在这里，在对应的 QQ 群里）。
  * 凭证无效时不返回任何信息 —— 页面只显示「二维码无效」，不泄露「这里有场考试」。
  */
 export async function getCheckinInfo(ctx: RequestContext): Promise<Response> {
-  const target = await resolveCheckinTarget(ctx)
-  if (!target) {
+  const stage = await resolveCheckinStage(ctx)
+  if (!stage) {
     return fail(404, 'CHECKIN_TOKEN_INVALID', '这个签到二维码不存在、已失效或已被作废')
   }
 
@@ -512,11 +468,8 @@ export async function getCheckinInfo(ctx: RequestContext): Promise<Response> {
 
   return ok(
     {
-      stage: target.stage,
-      stageLabel: RECRUIT_STAGE_LABELS[target.stage],
-      sessionId: target.sessionId,
-      sessionLabel: target.label,
-      sessionTime: target.timeText,
+      stage,
+      stageLabel: RECRUIT_STAGE_LABELS[stage],
       cycleName: settings.cycle.name,
       studioName: site.studioName,
     },

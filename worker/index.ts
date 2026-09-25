@@ -41,22 +41,15 @@ import {
 } from './routes/admin-content'
 import {
   exportRecruitCsv,
-  getRecruitAutoTasks,
-  getRecruitBoard,
   getRecruitMails,
   getRecruitSettingsRoute,
-  previewRecruitAuto,
-  runRecruitAuto,
+  getRecruitStats,
+  issueCheckinCode,
+  listCheckinCodes,
+  revokeCheckinCode,
+  runRecruitActionRoute,
   updateRecruitSettings,
 } from './routes/admin-recruit'
-import {
-  createSessionAdmin,
-  deleteSessionAdmin,
-  issueCheckinTokenAdmin,
-  listSessionsAdmin,
-  revokeCheckinTokensAdmin,
-  updateSessionAdmin,
-} from './routes/admin-sessions'
 import {
   checkin,
   confirmInvite,
@@ -66,7 +59,6 @@ import {
   myApplication,
   submitApplication,
 } from './routes/applications'
-import { runRecruitScheduled } from './lib/recruit-auto'
 import { getRuntimeConfig } from './routes/config'
 import { sendTestMail } from './routes/mail'
 import { getBootstrap, getPublicContent, getSiteConfigRoute, health } from './routes/public'
@@ -90,7 +82,7 @@ const routes: RouteDef[] = [
   { method: 'GET', path: '/api/public/site-config', handler: getSiteConfigRoute },
   { method: 'GET', path: '/api/public/bootstrap', handler: getBootstrap },
   { method: 'GET', path: '/api/public/content/:resource', handler: getPublicContent },
-  // 本届招新的时间窗与状态：报名页据此显隐表单、显示「未到时间 / 已结束」
+  // 本届招新状态（开放 / 还没开 / 已截止）：报名页据此显隐表单
   { method: 'GET', path: '/api/public/recruit', handler: getRecruitStatus },
 
   // ---- 文件（头像等）：上传需管理员，读取公开且长缓存 ----
@@ -107,7 +99,7 @@ const routes: RouteDef[] = [
   // 邀请函：凭证即密权，不要求登录（会话过期了也能确认加入）
   { method: 'GET', path: '/api/applications/invite/:token', handler: getInvite },
   { method: 'POST', path: '/api/applications/invite/:token', handler: confirmInvite },
-  // 扫码签到：凭证（token）即密权 —— 绑场次 + 带失效时间，所以不需要登录态，
+  // 扫码签到：凭证（token）即密权 —— 只绑阶段 + 带失效时间，所以不需要登录态，
   // 也没有裸入口（导航里不出现，直接访问无 token 的路径拿不到任何信息）。
   { method: 'GET', path: '/api/applications/checkin/:token', handler: getCheckinInfo },
   { method: 'POST', path: '/api/applications/checkin/:token', handler: checkin },
@@ -141,34 +133,22 @@ const routes: RouteDef[] = [
   { method: 'POST', path: '/api/admin/storage/test', handler: testStorage, auth: 'admin' },
   { method: 'POST', path: '/api/admin/storage/direct-token', handler: issueDirectTokenRoute, auth: 'admin' },
 
-  // ---- 后台：招新（周期 / 模板 / 看板 / 自动流程） ----
+  // ---- 后台：招新（整届状态与动作 / 群号与模板 / 签到二维码 / 导出 / 日志） ----
   { method: 'GET', path: '/api/admin/recruit', handler: getRecruitSettingsRoute, auth: 'admin' },
   { method: 'PUT', path: '/api/admin/recruit', handler: updateRecruitSettings, auth: 'admin' },
-  { method: 'GET', path: '/api/admin/recruit/board', handler: getRecruitBoard, auth: 'admin' },
-  { method: 'GET', path: '/api/admin/recruit/tasks', handler: getRecruitAutoTasks, auth: 'admin' },
-  { method: 'GET', path: '/api/admin/recruit/auto', handler: previewRecruitAuto, auth: 'admin' },
-  { method: 'POST', path: '/api/admin/recruit/auto', handler: runRecruitAuto, auth: 'admin' },
+  { method: 'GET', path: '/api/admin/recruit/stats', handler: getRecruitStats, auth: 'admin' },
+  // 整届的每一次推进都走这里：状态机与校验在 lib/recruit-cycle.ts
+  { method: 'POST', path: '/api/admin/recruit/actions', handler: runRecruitActionRoute, auth: 'admin' },
+  { method: 'GET', path: '/api/admin/recruit/checkin-codes', handler: listCheckinCodes, auth: 'admin' },
+  { method: 'POST', path: '/api/admin/recruit/checkin-codes', handler: issueCheckinCode, auth: 'admin' },
+  {
+    method: 'POST',
+    path: '/api/admin/recruit/checkin-codes/revoke',
+    handler: revokeCheckinCode,
+    auth: 'admin',
+  },
   { method: 'GET', path: '/api/admin/recruit/export', handler: exportRecruitCsv, auth: 'admin' },
   { method: 'GET', path: '/api/admin/recruit/mails', handler: getRecruitMails, auth: 'admin' },
-
-  // ---- 后台：考试场次与签到二维码 ----
-  { method: 'GET', path: '/api/admin/recruit/sessions', handler: listSessionsAdmin, auth: 'admin' },
-  { method: 'POST', path: '/api/admin/recruit/sessions', handler: createSessionAdmin, auth: 'admin' },
-  // 比 :id 更长的路径先注册，避免被参数路由截胡
-  {
-    method: 'POST',
-    path: '/api/admin/recruit/sessions/:id/checkin-token',
-    handler: issueCheckinTokenAdmin,
-    auth: 'admin',
-  },
-  {
-    method: 'POST',
-    path: '/api/admin/recruit/checkin-tokens/revoke',
-    handler: revokeCheckinTokensAdmin,
-    auth: 'admin',
-  },
-  { method: 'PUT', path: '/api/admin/recruit/sessions/:id', handler: updateSessionAdmin, auth: 'admin' },
-  { method: 'DELETE', path: '/api/admin/recruit/sessions/:id', handler: deleteSessionAdmin, auth: 'admin' },
 
   // ---- 后台：报名明细（列表 / 补录 / 详情 / 改状态 / 批量 / 批量通知信 / 下载） ----
   { method: 'GET', path: '/api/admin/applications', handler: listApplicationsAdmin, auth: 'admin' },
@@ -240,22 +220,6 @@ export default {
     return withCors(response, request, env)
   },
 
-  /**
-   * 定时兜底（wrangler.toml 的 [triggers] crons，默认每天一次）。
-   *
-   * 只做两件「不需要人决策、但不做会漏」的事：
-   *   1. 笔试结束过了宽限期仍未签到的同学 → 标记「未参加」（配置里可关）；
-   *   2. 全部确认完毕或已过转正截止 → 导出存档并关闭本届（配置里可关）。
-   * 需要判断的（成绩晋级、面试录取、答辩通过）一律不自动执行 ——
-   * 那要管理员在「自动流程」页看过名单再确认。
-   */
-  async scheduled(_event: ScheduledController, env: Env, exec: ExecutionContext): Promise<void> {
-    try {
-      const summary = await runRecruitScheduled(env, exec)
-      if (summary.actions.length > 0) console.log('[cron] 招新定时任务完成', summary)
-    } catch (error) {
-      // cron 失败不能影响其它定时任务，只记日志
-      console.error('[cron] 招新定时任务失败', error)
-    }
-  },
+  // 刻意没有 scheduled：整届的开与关完全由管理员点按钮决定，
+  // 连「到点自动关闭」都不做 —— 见 shared/recruit.ts 的 RECRUIT_ACTION_META。
 } satisfies ExportedHandler<Env>

@@ -112,18 +112,10 @@ export interface Application {
   /** web = 同学自己在官网提交；manual = 未报名但现场来考，管理员手工补录 */
   source: ApplicationSource
 
-  // ---- 签到（每个阶段各自记录） ----
+  // ---- 签到（每个阶段各自记录；同一阶段只有一场，所以不需要场次字段） ----
   writtenCheckinAt: string
   interviewCheckinAt: string
   defenseCheckinAt: string
-  /**
-   * 签到发生在哪一场（recruit_sessions.id）。
-   * 开放参加制下同学任选一场，所以既要记「签没签」也要记「签的哪场」，
-   * 后台才能按场次统计到场人数。空串 = 没签或签在已删除的场次上。
-   */
-  writtenSessionId: string
-  interviewSessionId: string
-  defenseSessionId: string
 
   // ---- 成绩与评语 ----
   writtenScore: string

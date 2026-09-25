@@ -1,20 +1,21 @@
 /**
- * 招新设置（周期 + 邮件模板）的读写。
+ * 招新设置的读写（整届状态 + 名称 + 四个 QQ 群号 + 邮件模板）。
  *
  * 存在 D1 `site_config['recruit']`，**刻意不塞进 `runtime`**：
- * runtime 是每个访客都会拉取的公开配置，而周期时间窗、邮件模板属于管理端数据，
+ * runtime 是每个访客都会拉取的公开配置，而群号与模板正文属于管理端数据，
  * 放进 runtime 会让模板正文随 `/api/config/runtime` 下发给所有访问者。
  *
- * 两个部分都是「JSON 合并默认值」，所以新增配置项**不需要数据库迁移**。
+ * 两部分都是「JSON 合并默认值」，所以新增配置项**不需要数据库迁移**。
+ * 整届状态（state）也在这里 —— 它是被管理员动作改写的，改一次写一次 KV/D1，量级完全可接受。
  */
 
 import {
   DEFAULT_RECRUIT_CYCLE,
+  DEFAULT_RECRUIT_GROUPS,
   DEFAULT_RECRUIT_TEMPLATES,
-  recruitPhase,
   RECRUIT_MAIL_KINDS,
   type RecruitCycleConfig,
-  type RecruitPhase,
+  type RecruitCycleState,
   type RecruitTemplates,
 } from '../../shared/recruit'
 import type { Env } from '../env'
@@ -29,9 +30,8 @@ export interface RecruitSettings {
 
 function mergeCycle(stored: Partial<RecruitCycleConfig> | null | undefined): RecruitCycleConfig {
   const merged = { ...DEFAULT_RECRUIT_CYCLE, ...(stored ?? {}) }
-  // archives 是数组：缺省时用默认空数组，存在时原样保留（浅合并会把 undefined 带进来）
-  merged.archives = Array.isArray(merged.archives) ? merged.archives : []
-  merged.absentGraceHours = Number(merged.absentGraceHours) || 0
+  // groups 是对象：浅合并会把 undefined 带进来，所以按字段单独合并
+  merged.groups = { ...DEFAULT_RECRUIT_GROUPS, ...(stored?.groups ?? {}) }
   return merged
 }
 
@@ -57,10 +57,10 @@ export async function getRecruitSettings(env: Env): Promise<RecruitSettings> {
   }
 }
 
-/** 当前周期处于什么阶段（多处要用，单独包一个） */
-export async function getRecruitPhase(env: Env, now: Date = new Date()): Promise<RecruitPhase> {
+/** 只看整届状态（公开接口与签到、报名风控都要用，省得每处都解一遍设置） */
+export async function getRecruitState(env: Env): Promise<RecruitCycleState> {
   const { cycle } = await getRecruitSettings(env)
-  return recruitPhase(cycle, now)
+  return cycle.state
 }
 
 export interface RecruitSettingsPatch {

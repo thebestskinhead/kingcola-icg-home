@@ -7,7 +7,13 @@
 
 import { RESOURCES, isResourceKey } from '../../shared/resources'
 import { isSsoReady } from '../../shared/runtime'
-import { isApplyOpen, recruitNotice, recruitPhase } from '../../shared/recruit'
+import {
+  applyGate,
+  isApplyOpen,
+  recruitNotice,
+  RECRUIT_STATE_LABELS,
+  type RecruitPublicStatus,
+} from '../../shared/recruit'
 import { cacheable, fail, ok } from '../lib/http'
 import { getRecruitSettings } from '../lib/recruit-config'
 import { getSiteConfig, listEntities } from '../lib/repo'
@@ -50,11 +56,14 @@ export async function getBootstrap(ctx: RequestContext): Promise<Response> {
     getRecruitSettings(ctx.env),
   ])
 
-  const recruit = {
-    phase: recruitPhase(recruitSettings.cycle),
-    applyOpen: isApplyOpen(recruitSettings.cycle),
-    name: recruitSettings.cycle.name,
-    notice: recruitNotice(recruitSettings.cycle),
+  const cycle = recruitSettings.cycle
+  const recruit: RecruitPublicStatus = {
+    state: cycle.state,
+    stateLabel: RECRUIT_STATE_LABELS[cycle.state],
+    applyOpen: isApplyOpen(cycle.state),
+    gate: applyGate(cycle.state),
+    name: cycle.name,
+    notice: recruitNotice(cycle),
   }
 
   return cacheable({ members, projects, news, slides, site, recruit }, PUBLIC_MAX_AGE)

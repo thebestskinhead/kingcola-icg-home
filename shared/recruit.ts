@@ -1,30 +1,30 @@
 /**
- * 招新（报名）契约 —— 状态模型、周期配置、邮件模板、自动流程。
+ * 招新（报名）契约 —— 状态模型、周期状态机、邮件模板、动作表。
  *
- * 这是整个招新模块的**唯一事实源**：前端、后台、Worker、Cron 都引它。
+ * 这是整个招新模块的**唯一事实源**：前台、后台、Worker 都引它。
  * 改规则只改这里，不会出现「后台显示通过、Worker 认为是未通过」这类分歧。
  *
+ * ── 两条总原则 ───────────────────────────────────────────────
+ * ① **没有任何时间字段**。整届的推进完全由管理员点按钮决定；
+ *    考试的时间与地点通过对应的 QQ 群通知，邮件里不出现。
+ * ② **没有「场次」概念**。同一阶段就一场（同学按群里的通知来），
+ *    签到二维码只绑阶段：stage + 有效期 + 可作废。
+ *
  * ── 状态模型 ───────────────────────────────────────────────
- * 不再用单列枚举描述「报名状态」，而是 **阶段 + 该阶段结果** 两个属性：
+ * 两条线，都存字符串、中文标签一律派生（`applicationLabel()` / `RECRUIT_STATE_LABELS`）：
  *
- *   stage  当前处在哪一段：报名 / 笔试 / 面试 / 答辩(预备期) / 转正
- *   result 这一段的结果：待定 / 已参加 / 通过 / 未通过 / 未参加 / 婉拒 / 退出
+ *   个人：`stage`（报名/笔试/面试/答辩/转正）+ `result`（待定/已参加/通过/未通过/未参加/…）
+ *   整届：`state`（见 RecruitCycleState）—— 由 RECRUIT_ACTIONS 这张动作表驱动。
  *
- * 「笔试是否已安排、面试时间是什么」不是个人状态，而是**全局周期配置**（见 RecruitCycleConfig），
- * 所以 stage=written 且 result='' 就表示「在等笔试」，不需要再存一个 scheduled。
- * 可读的中文标签由 `applicationLabel()` 派生，**不入库**，永远不会两处不一致。
- *
- * ── 邮件 ───────────────────────────────────────────────────
- * 5 类共 7 条模板（感谢信按阶段分 3 条），文案与开关都存在后台可改的配置里，
- * 支持 `{变量}` 占位（见 RECRUIT_MAIL_VARIABLES）。
+ * 「笔试是否已安排」这种全局问题由整届 state 回答（written = 笔试进行中），
+ * 不再往每个人身上存「已安排」。
  */
 
 import { formatLimit } from './resources'
-import { cnTimeToEpoch, cnTimeToText } from './time'
 import type { Application } from './types'
 
 // ============================================================================
-// 一、阶段与结果
+// 一、阶段与结果（个人）
 // ============================================================================
 
 export type RecruitStage = 'apply' | 'written' | 'interview' | 'defense' | 'onboard'
@@ -48,15 +48,15 @@ export const RECRUIT_STAGE_LABELS: Record<RecruitStage, string> = {
 /** 阶段说明（后台页签提示） */
 export const RECRUIT_STAGE_HINTS: Record<RecruitStage, string> = {
   apply: '已提交报名表、等待安排笔试的同学',
-  written: '笔试环节：签到、录入成绩、生成面试名单',
-  interview: '面试环节：签到、录取，录取后进入预备期',
+  written: '笔试环节：签到、补录、录入成绩、定面试名单',
+  interview: '面试环节：签到、评语、确认录取',
   defense: '预备期 / 答辩：考核通过后转正',
   onboard: '已发邀请函，等待本人确认加入',
 }
 
 /**
  * 该阶段的结果。空串 '' 表示「尚无结论 / 正在进行」。
- * 刻意没有「已安排」——是否已安排是全局周期的事，不是每个人的状态。
+ * 刻意没有「已安排」——是否已安排是整届状态的事，不是每个人的状态。
  */
 export type RecruitResult =
   | ''
@@ -170,14 +170,14 @@ export function applicationTone(stage: RecruitStage, result: RecruitResult): Rec
   return stage === 'apply' ? 'pending' : 'active'
 }
 
-/** 流程是否已经结束（不会再自动往下走） */
+/** 流程是否已经结束（不会再往下走） */
 export function isApplicationFinished(stage: RecruitStage, result: RecruitResult): boolean {
   if (result === 'withdrawn' || result === 'failed' || result === 'absent') return true
   if (stage === 'onboard') return result === 'passed' || result === 'declined'
   return false
 }
 
-/** 是否还在候选池里（看板与「待处理」计数用） */
+/** 是否还在候选池里（漏斗与「待处理」计数用） */
 export function isApplicationActive(application: Pick<Application, 'stage' | 'result'>): boolean {
   return !isApplicationFinished(application.stage, application.result)
 }
@@ -263,7 +263,7 @@ export interface ApplicationFormInput {
   qq: string
 }
 
-/** 校验报名表单；返回 null 表示通过。前端与 Worker 共用，避免两端规则跑偏。 */
+/** 校验报名表单；返回 null 表示通过。前台与 Worker 共用，避免两端规则跑偏。 */
 export function validateApplicationForm(input: Partial<ApplicationFormInput>): string | null {
   const email = (input.email ?? '').trim()
   if (!email) return '请填写邮箱，后续的笔试 / 面试通知都会发到这里'
@@ -284,15 +284,15 @@ export function validateApplicationForm(input: Partial<ApplicationFormInput>): s
 // 五、邀请函
 // ============================================================================
 
-/** 邀请函链接的兜底有效期（未配置转正截止时用它） */
+/** 邀请函链接的兜底有效期（14 天；不用配置，够长也够安全） */
 export const APPLICATION_INVITE_TTL_HOURS = 14 * 24
 
-/** 邀请函过期时间（ISO 字符串，与转正截止取较早者由调用方决定） */
+/** 邀请函过期时间（ISO 字符串） */
 export function applicationInviteExpiry(
   from: Date = new Date(),
-  fallbackHours = APPLICATION_INVITE_TTL_HOURS,
+  hours = APPLICATION_INVITE_TTL_HOURS,
 ): string {
-  return new Date(from.getTime() + fallbackHours * 3600 * 1000).toISOString()
+  return new Date(from.getTime() + hours * 3600 * 1000).toISOString()
 }
 
 /** 邀请函是否仍可用（已转正、已过期、状态不对都返回 false） */
@@ -307,12 +307,18 @@ export function isInviteUsable(
 }
 
 // ============================================================================
-// 六、签到（真扫码：二维码 = 带凭证的签到链接，绑场次 + 带失效时间）
+// 六、签到（二维码只绑阶段，带有效期、可作废）
 // ============================================================================
 
 export type CheckinStage = 'written' | 'interview' | 'defense'
 
 export const CHECKIN_STAGES: readonly CheckinStage[] = ['written', 'interview', 'defense']
+
+export const CHECKIN_STAGE_LABELS: Record<CheckinStage, string> = {
+  written: '笔试',
+  interview: '面试',
+  defense: '答辩',
+}
 
 export function isCheckinStage(value: string): value is CheckinStage {
   return (CHECKIN_STAGES as readonly string[]).includes(value)
@@ -331,7 +337,7 @@ export function checkinTokenPath(token: string): string {
 
 /**
  * 签到二维码是否还能用。过期或已作废都不行 ——
- * 二维码会被拍照、会被贴在场馆墙上，所以「失效时间 + 一键作废」是必需的。
+ * 二维码会被拍照、会贴在考场墙上，所以「失效时间 + 一键作废」是必需的。
  */
 export function isCheckinTokenUsable(
   expiresAt: string,
@@ -345,124 +351,12 @@ export function isCheckinTokenUsable(
   return expires > now.getTime()
 }
 
-/** 生成二维码时默认给多长的有效期 */
+/** 后台签发二维码时默认给多长的有效期 */
 export const CHECKIN_TOKEN_TTL_HOURS = 12
 
-// ============================================================================
-// 六之二、考试场次（笔试 / 面试 / 答辩各自可以有多场）
-//
-// 采用「开放参加制」：邀请函列出全部场次，同学现场任选一场参加，
-// 签到按当场二维码记到场次（所以不需要预先给每个人排场次，也天然容纳临时来考的人）。
-// 场次存在 recruit_sessions 表（不是周期 JSON），因为签到凭证要引用它、还要按场次统计。
-// ============================================================================
-
-/** 场次所属阶段，与签到阶段是同一套取值 */
-export type SessionStage = CheckinStage
-
-export const SESSION_STAGE_LABELS: Record<SessionStage, string> = {
-  written: '笔试',
-  interview: '面试',
-  defense: '答辩',
-}
-
-export interface RecruitSession {
-  id: string
-  stage: SessionStage
-  /** 场次名，如「第一场」「上午场」；留空时按顺序显示「第 N 场」 */
-  name: string
-  /** 起止时间，北京时间字符串 YYYY-MM-DDTHH:mm（与周期配置同一套约定） */
-  startsAt: string
-  endsAt: string
-  /** 地点 / 形式，如「一教 305」「腾讯会议 123-456-789」 */
-  place: string
-  /** 备注，会写进邀请函，如「请自带电脑」 */
-  note: string
-  /** 展示与邀请函里的排序 */
-  sortOrder: number
-}
-
-export const SESSION_NAME_LIMIT = 40
-export const SESSION_PLACE_LIMIT = 80
-export const SESSION_NOTE_LIMIT = 200
-
-/** 场次名：没填就给个序号兜底的称呼 */
-export function sessionLabel(session: RecruitSession, index: number): string {
-  return session.name.trim() || `第 ${index + 1} 场`
-}
-
-/** 某阶段的场次，按 sortOrder → 开始时间排序 */
-export function sessionsOfStage(
-  sessions: readonly RecruitSession[],
-  stage: SessionStage,
-): RecruitSession[] {
-  return sessions
-    .filter((session) => session.stage === stage)
-    .slice()
-    .sort(
-      (a, b) =>
-        a.sortOrder - b.sortOrder ||
-        (cnTimeToEpoch(a.startsAt) ?? 0) - (cnTimeToEpoch(b.startsAt) ?? 0),
-    )
-}
-
-/** 单个场次的时间文本：`2026 年 10 月 8 日 14:00–16:00`（同一天不重复写日期） */
-export function sessionTimeText(session: Pick<RecruitSession, 'startsAt' | 'endsAt'>): string {
-  const start = cnTimeToText(session.startsAt)
-  if (!start) return ''
-  const endFull = cnTimeToText(session.endsAt)
-  if (!endFull) return start
-  const sameDay = session.startsAt.slice(0, 10) === session.endsAt.slice(0, 10)
-  const end = sameDay ? endFull.replace(/^.*?日\s*/, '') : endFull
-  return `${start}–${end}`
-}
-
-/**
- * 场次列表 → 邮件正文里的多行文本（`{writtenSessions}` / `{interviewSessions}`）。
- * 一行一场：「第一场 · 2026 年 10 月 8 日 14:00–16:00 · 一教 305」，有备注再另起一行。
- */
-export function sessionsToText(sessions: readonly RecruitSession[]): string {
-  return sessions
-    .map((session, index) => {
-      const line = [
-        sessionLabel(session, index),
-        sessionTimeText(session),
-        session.place.trim(),
-      ]
-        .filter(Boolean)
-        .join(' · ')
-      const note = session.note.trim()
-      return note ? `${line}\n（${note}）` : line
-    })
-    .join('\n')
-}
-
-/** 一组场次里最晚的结束时刻（epoch 毫秒）；空列表返回 null */
-export function lastSessionEnd(sessions: readonly RecruitSession[]): number | null {
-  let latest: number | null = null
-  for (const session of sessions) {
-    const end = cnTimeToEpoch(session.endsAt || session.startsAt)
-    if (end !== null && (latest === null || end > latest)) latest = end
-  }
-  return latest
-}
-
-/** 校验收到的场次数据（后台表单与 Worker 共用）；返回 null 表示通过 */
-export function validateSession(input: Partial<RecruitSession>): string | null {
-  if (!input.stage || !isCheckinStage(input.stage)) return '场次阶段不合法'
-  const startsAt = (input.startsAt ?? '').trim()
-  if (!startsAt) return '请填写开始时间'
-  if (cnTimeToEpoch(startsAt) === null) return '开始时间格式应为 2026-10-08T14:00'
-  const endsAt = (input.endsAt ?? '').trim()
-  if (endsAt) {
-    const end = cnTimeToEpoch(endsAt)
-    if (end === null) return '结束时间格式应为 2026-10-08T16:00'
-    if (end <= (cnTimeToEpoch(startsAt) ?? 0)) return '结束时间必须晚于开始时间'
-  }
-  if ((input.name ?? '').trim().length > SESSION_NAME_LIMIT) return '场次名太长了'
-  if ((input.place ?? '').trim().length > SESSION_PLACE_LIMIT) return '地点太长了'
-  if ((input.note ?? '').trim().length > SESSION_NOTE_LIMIT) return '备注太长了'
-  return null
-}
+/** 有效期的上下限（小时）：太短容易扫到时已过期，太长等于没设 */
+export const CHECKIN_TOKEN_TTL_MIN_HOURS = 1
+export const CHECKIN_TOKEN_TTL_MAX_HOURS = 24 * 14
 
 export interface CheckinRequest {
   /** 同学自己填写的姓名与学号 —— 与报名记录一致才算签到成功 */
@@ -485,7 +379,7 @@ export function normalizeName(value: string): string {
  * 签到时这条记录能不能算「该阶段的参与者」。
  *
  * - `current`：正处在这个阶段 → 正常签到
- * - `ahead`：还没被推进到该阶段（例如报名后后台还没来得及发笔试邀请就开考了）→ 也允许签到，
+ * - `ahead`：还没被推进到该阶段（例如报名后后台还没来得及确认名单就开考了）→ 也允许签到，
  *   签到本身会把他推进到该阶段。人在考场就不能因为后台没点按钮而签不上。
  * - `behind`：已经走到后面的阶段了（例如面试完了来扫笔试码）→ 拒绝，并提示他看自己的进度
  * - `closed`：流程已结束（淘汰 / 退出 / 已转正）→ 拒绝
@@ -506,177 +400,409 @@ export function checkinEligibility(
 }
 
 // ============================================================================
-// 七、周期配置（单一全局周期，存 site_config['runtime'].recruit）
+// 七、整届状态机（没有任何时间参与，全靠管理员点按钮）
 // ============================================================================
 
-/** 关闭时导出的一份存档（CSV 落在 applications/archives 下，私有，后台留下载入口） */
-export interface RecruitArchive {
-  name: string
-  /** 相对地址，形如 /api/files/applications/archives/xxx.csv */
-  url: string
-  closedAt: string
-  /** 本届报名人数与最终转正人数 */
-  total: number
-  members: number
+export type RecruitCycleState =
+  /** 休眠：没有进行中的周期 */
+  | 'dormant'
+  /** 备招：周期已创建，报名尚未开启 */
+  | 'prepare'
+  /** 报名进行中 */
+  | 'apply'
+  /** 报名已结束，待确认笔试名单 */
+  | 'apply_review'
+  /** 笔试进行中（现场签到 / 补签 / 补录） */
+  | 'written'
+  /** 笔试已结束，待录成绩、定面试名单 */
+  | 'written_review'
+  | 'interview'
+  | 'interview_review'
+  | 'defense'
+  | 'defense_review'
+  /** 已发邀请函，等本人确认加入 */
+  | 'onboard'
+
+export const RECRUIT_CYCLE_STATES: readonly RecruitCycleState[] = [
+  'dormant',
+  'prepare',
+  'apply',
+  'apply_review',
+  'written',
+  'written_review',
+  'interview',
+  'interview_review',
+  'defense',
+  'defense_review',
+  'onboard',
+]
+
+export const RECRUIT_STATE_LABELS: Record<RecruitCycleState, string> = {
+  dormant: '休眠中',
+  prepare: '备招',
+  apply: '报名进行中',
+  apply_review: '待确认笔试名单',
+  written: '笔试进行中',
+  written_review: '笔试已结束',
+  interview: '面试进行中',
+  interview_review: '面试已结束',
+  defense: '答辩进行中',
+  defense_review: '答辩已结束',
+  onboard: '等待确认加入',
 }
+
+export function isRecruitCycleState(value: string): value is RecruitCycleState {
+  return (RECRUIT_CYCLE_STATES as readonly string[]).includes(value)
+}
+
+/** 是否有进行中的周期（休眠之外都算） */
+export function isCycleActive(state: RecruitCycleState): boolean {
+  return state !== 'dormant'
+}
+
+/** 报名通道是否开放 */
+export function isApplyOpen(state: RecruitCycleState): boolean {
+  return state === 'apply'
+}
+
+/**
+ * 前台「加入我们」页面的门禁：开放 / 还没开 / 已截止。
+ * 三种情况的文案完全不同，所以由契约给出，避免前端各写一套判断。
+ */
+export type RecruitApplyGate = 'open' | 'not_open' | 'closed'
+
+export function applyGate(state: RecruitCycleState): RecruitApplyGate {
+  if (state === 'apply') return 'open'
+  if (state === 'dormant' || state === 'prepare') return 'not_open'
+  return 'closed'
+}
+
+/** 后台时间线上的节点（把 11 个状态归到 7 个节点） */
+export type RecruitTimelineKey = 'prepare' | RecruitStage
+
+export function cycleTimelineKey(state: RecruitCycleState): RecruitTimelineKey {
+  switch (state) {
+    case 'dormant':
+    case 'prepare':
+      return 'prepare'
+    case 'apply':
+    case 'apply_review':
+      return 'apply'
+    case 'written':
+    case 'written_review':
+      return 'written'
+    case 'interview':
+    case 'interview_review':
+      return 'interview'
+    case 'defense':
+    case 'defense_review':
+      return 'defense'
+    case 'onboard':
+      return 'onboard'
+  }
+}
+
+/** 该状态对应的个人阶段（休眠返回 null） */
+export function cycleStageOf(state: RecruitCycleState): RecruitStage | null {
+  const key = cycleTimelineKey(state)
+  return key === 'prepare' ? null : key
+}
+
+/** 是否处于「本阶段已结束、等收尾」 */
+export function isReviewState(state: RecruitCycleState): boolean {
+  return state.endsWith('_review')
+}
+
+/** 该状态下正在进行的考试阶段（决定后台显示哪张签到二维码卡片） */
+export function checkinStageOf(state: RecruitCycleState): CheckinStage | null {
+  if (state === 'written' || state === 'written_review') return 'written'
+  if (state === 'interview' || state === 'interview_review') return 'interview'
+  if (state === 'defense' || state === 'defense_review') return 'defense'
+  return null
+}
+
+/**
+ * 前台是否要显示招新相关的横幅 / 提示条。
+ * 备招期不显示（还没开），休眠不显示，其余（报名中与流程中）都显示。
+ */
+export function isRecruitVisible(state: RecruitCycleState): boolean {
+  return state !== 'dormant' && state !== 'prepare'
+}
+
+/** 给「加入我们」页面的一句话说明 */
+export function recruitNotice(cycle: RecruitCycleConfig): string {
+  switch (applyGate(cycle.state)) {
+    case 'open':
+      return `${cycle.name || '本届招新'}正在报名中，欢迎加入我们。`
+    case 'not_open':
+      return cycle.state === 'prepare'
+        ? `${cycle.name || '本届招新'}即将开始报名，请留意后续通知。`
+        : '本届招新尚未开始，请留意后续通知。'
+    case 'closed':
+      return '本届报名已截止。已报名的同学可登录查看自己的进度。'
+  }
+}
+
+// ============================================================================
+// 八、QQ 群（四个群各管一段，邮件里只给对应的那一个）
+// ============================================================================
+
+export type RecruitGroupKey = 'written' | 'interview' | 'probation' | 'formal'
+
+export const RECRUIT_GROUP_LABELS: Record<RecruitGroupKey, string> = {
+  written: '笔试通知群',
+  interview: '面试通知群',
+  probation: '预备成员群',
+  formal: '正式成员群',
+}
+
+export interface RecruitQQGroups {
+  written: string
+  interview: string
+  probation: string
+  formal: string
+}
+
+export const DEFAULT_RECRUIT_GROUPS: RecruitQQGroups = {
+  written: '',
+  interview: '',
+  probation: '',
+  formal: '',
+}
+
+/** QQ 群号：5–12 位数字；留空允许（可以先建群后补，邮件里就是空的） */
+export function validateQQGroup(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (!APPLICATION_QQ_PATTERN.test(trimmed)) return 'QQ 群号应为 5–12 位数字'
+  return null
+}
+
+/** 校验四个群号；返回第一条错误，全部通过返回 null */
+export function validateQQGroups(groups: Partial<RecruitQQGroups>): string | null {
+  for (const key of Object.keys(RECRUIT_GROUP_LABELS) as RecruitGroupKey[]) {
+    const invalid = validateQQGroup(groups[key] ?? '')
+    if (invalid) return `${RECRUIT_GROUP_LABELS[key]}${invalid.replace('QQ 群号', '')}`
+  }
+  return null
+}
+
+/**
+ * 某个人此刻该进哪个群。报名阶段还没分群，转正之后进正式成员群。
+ * 邮件模板变量与「我的报名进度」页都用它，避免两处各写一套映射。
+ */
+export function groupKeyOfStage(stage: RecruitStage): RecruitGroupKey {
+  switch (stage) {
+    case 'written':
+      return 'written'
+    case 'interview':
+      return 'interview'
+    case 'defense':
+      // 预备期的事在预备成员群里说
+      return 'probation'
+    case 'onboard':
+      return 'formal'
+    default:
+      return 'written'
+  }
+}
+
+/** 报名阶段没有群可进（还没到笔试），返回 null */
+export function groupKeyForRecord(stage: RecruitStage): RecruitGroupKey | null {
+  return stage === 'apply' ? null : groupKeyOfStage(stage)
+}
+
+// ============================================================================
+// 九、周期配置（单一全局周期，存 site_config['recruit'].cycle）
+// ============================================================================
 
 export interface RecruitCycleConfig {
   /** 本届名称，如「2026 年秋季招新」 */
   name: string
-
-  /** 报名窗口（北京时间字符串 YYYY-MM-DDTHH:mm，下同） */
-  applyStart: string
-  applyEnd: string
-  /**
-   * 确认笔试名单的时间。非空即表示**报名通道已关闭**（材料锁死，不再接受新报名与替换报名表）。
-   * 这是「确认笔试名单」这个动作唯一需要落库的痕迹 —— 名单本身是挨条改 stage，不需要额外标记。
-   */
-  writtenConfirmedAt: string
-
-  /**
-   * 笔试的**兜底**时间与地点。真正的安排是 recruit_sessions 表里的场次列表
-   * （一个阶段可以有多场，见 RecruitSession）：有场次时 writtenEnd 由最后一场自动派生、
-   * {writtenAt} / {writtenPlace} 取第一场；没有场次时才用这里手填的值（兼容旧配置）。
-   */
-  writtenAt: string
-  writtenEnd: string
-  writtenPlace: string
-
-  /** 面试的兜底时间与地点，同上（有场次时取第一场） */
-  interviewAt: string
-  interviewPlace: string
-
-  /** 预备期起止（答辩期），写进面试通过通知 */
-  defenseStart: string
-  defenseEnd: string
-
-  /** 转正确认截止：到期仍未确认的视为放弃，并触发自动关闭 */
-  onboardDeadline: string
-
-  /** 笔试结束后多少小时仍未签到 → 视为未参加（自动退出流程） */
-  absentGraceHours: number
-  /** 缺考自动标记开关（关掉后自动流程页只提醒、不自动执行） */
-  autoAbsent: boolean
-  /** 允许自动关闭（到转正截止或全部确认完毕） */
-  autoClose: boolean
-
-  // 刻意没有「晋级规则」（前 N 名 / 分数线）这类配置：面试名单由管理员人工确认，
-  // 后台提供「勾选成绩不低于 X 分的同学」做批量预选 —— 规则不该藏在配置里替人做决定。
-
-  /** 手动关闭 / 重新开启的标记；手动关闭写入，重新开启清空 */
-  forceClosed: boolean
-  /** 关闭时间；非空即表示本届已结束（数据已归档并清空） */
-  closedAt: string
-
-  /** 往届存档列表（每次关闭追加一条） */
-  archives: RecruitArchive[]
+  /** 整届状态（唯一的状态来源，由 RECRUIT_ACTIONS 驱动） */
+  state: RecruitCycleState
+  /** 四个 QQ 群号：每封邀请函只给对应的那一个 */
+  groups: RecruitQQGroups
+  /** 本届创建时间（只用于界面显示，不参与任何判断） */
+  startedAt: string
 }
 
 export const DEFAULT_RECRUIT_CYCLE: RecruitCycleConfig = {
   name: '',
-  applyStart: '',
-  applyEnd: '',
-  writtenConfirmedAt: '',
-  writtenAt: '',
-  writtenEnd: '',
-  writtenPlace: '',
-  interviewAt: '',
-  interviewPlace: '',
-  defenseStart: '',
-  defenseEnd: '',
-  onboardDeadline: '',
-  absentGraceHours: 24,
-  autoAbsent: true,
-  autoClose: true,
-  forceClosed: false,
-  closedAt: '',
-  archives: [],
-}
-
-export type RecruitPhase = 'not_configured' | 'upcoming' | 'applying' | 'in_progress' | 'closed'
-
-export const RECRUIT_PHASE_LABELS: Record<RecruitPhase, string> = {
-  not_configured: '未配置',
-  upcoming: '未开始',
-  applying: '报名进行中',
-  in_progress: '流程进行中',
-  closed: '已结束',
-}
-
-/**
- * 当前周期处在什么状态。
- * - 已关闭（closedAt 非空）→ closed
- * - 时间窗没配齐 → not_configured
- * - 未到报名开始 → upcoming
- * - 在报名窗口内 → applying
- * - 报名已截止但流程还在走 → in_progress
- */
-export function recruitPhase(config: RecruitCycleConfig, now: Date = new Date()): RecruitPhase {
-  if (config.closedAt) return 'closed'
-  const start = cnTimeToEpoch(config.applyStart)
-  const end = cnTimeToEpoch(config.applyEnd)
-  if (start === null || end === null || end <= start) return 'not_configured'
-
-  const t = now.getTime()
-  if (t < start) return 'upcoming'
-  if (t <= end) return 'applying'
-  return 'in_progress'
-}
-
-/** 招新模块是否对管理员开放：报名中或流程进行中 */
-export function isRecruitModuleOpen(phase: RecruitPhase): boolean {
-  return phase === 'applying' || phase === 'in_progress'
-}
-
-/**
- * 报名通道是否开放（学生能不能提交 / 替换报名表）。
- *
- * 两个条件都要满足：① 在报名时间窗内；② **还没确认笔试名单**。
- * 确认名单是「材料锁死」的分界点 —— 评审都开始了还让材料变来变去没有意义，
- * 所以即便时间窗还没到点，确认名单后也立刻关闭（见自动流程的 confirm_written）。
- */
-export function isApplyOpen(config: RecruitCycleConfig, now: Date = new Date()): boolean {
-  if (config.writtenConfirmedAt) return false
-  return recruitPhase(config, now) === 'applying'
-}
-
-/** 给「加入我们」页面的一句话说明 */
-export function recruitNotice(config: RecruitCycleConfig, now: Date = new Date()): string {
-  switch (recruitPhase(config, now)) {
-    case 'not_configured':
-      return '招新时间尚未公布，请稍后再来。'
-    case 'upcoming':
-      return `${config.name || '本届招新'}将于 ${cnTimeToText(config.applyStart)} 开始报名。`
-    case 'applying':
-      return `${config.name || '本届招新'}报名截止时间：${cnTimeToText(config.applyEnd)}。`
-    case 'in_progress':
-      return '本届报名已截止。已报名的同学可登录查看自己的进度。'
-    case 'closed':
-      return '本届招新已结束，感谢关注。'
-  }
-}
-
-/** 笔试是否已结束（缺考判定的起点） */
-export function isWrittenFinished(config: RecruitCycleConfig, now: Date = new Date()): boolean {
-  const end = cnTimeToEpoch(config.writtenEnd)
-  return end !== null && now.getTime() > end
-}
-
-/** 笔试结束后允许的签到宽限期是否已过 —— 过了就可以标记「未参加」 */
-export function isAbsentWindowPassed(config: RecruitCycleConfig, now: Date = new Date()): boolean {
-  const end = cnTimeToEpoch(config.writtenEnd)
-  if (end === null) return false
-  return now.getTime() > end + Math.max(config.absentGraceHours, 0) * 3600 * 1000
-}
-
-/** 转正截止是否已过（自动关闭的判定之一） */
-export function isOnboardDeadlinePassed(config: RecruitCycleConfig, now: Date = new Date()): boolean {
-  const deadline = cnTimeToEpoch(config.onboardDeadline)
-  return deadline !== null && now.getTime() > deadline
+  state: 'dormant',
+  groups: { ...DEFAULT_RECRUIT_GROUPS },
+  startedAt: '',
 }
 
 // ============================================================================
-// 八、邮件模板
+// 十、动作表（整届推进的全部入口）
+// ============================================================================
+
+export type RecruitAction =
+  /** 启动系统：创建新周期，进入备招 */
+  | 'start_cycle'
+  /** 开启报名（前台出现报名入口） */
+  | 'open_apply'
+  /** 结束报名（不再收表 / 替换），名单仍可调整 */
+  | 'end_apply'
+  /** 确认笔试名单：勾选的人进笔试并发邀请函，其余判未通过初筛（不发信） */
+  | 'confirm_written'
+  /** 结束笔试：未签到者自动标记缺考（不发信），解锁成绩录入 */
+  | 'end_written'
+  /** 生成面试名单：勾选的人进面试并发邀请函，其余发感谢信 */
+  | 'advance_written'
+  | 'end_interview'
+  /** 确认录取：勾选的人进预备期并发面试通过通知，其余发感谢信 */
+  | 'advance_interview'
+  | 'end_defense'
+  /** 确认最终名单：勾选的人转正并签发邀请函，其余发感谢信 */
+  | 'advance_defense'
+  /** 关闭本届：导出名单存档 → 清空报名数据与发信日志 → 回到休眠 */
+  | 'close_cycle'
+
+export const RECRUIT_ACTIONS: readonly RecruitAction[] = [
+  'start_cycle',
+  'open_apply',
+  'end_apply',
+  'confirm_written',
+  'end_written',
+  'advance_written',
+  'end_interview',
+  'advance_interview',
+  'end_defense',
+  'advance_defense',
+  'close_cycle',
+]
+
+export interface RecruitActionMeta {
+  /** 按钮上的字 */
+  label: string
+  /** 只有处在这几个状态才能执行 */
+  from: readonly RecruitCycleState[]
+  /** 执行后整届进入的状态 */
+  to: RecruitCycleState
+  /** 需要先勾选名单（不勾选就点会被拦） */
+  needsSelection: boolean
+  /** 按钮旁的说明（写清代价与不发信这类规则） */
+  description: string
+}
+
+/**
+ * 状态机就在这张表里：**校验与推进都读它**，
+ * 后台按钮的可见性、文案也读它，所以不可能出现「界面能点但后端拒绝」。
+ */
+export const RECRUIT_ACTION_META: Record<RecruitAction, RecruitActionMeta> = {
+  start_cycle: {
+    label: '启动系统，开始新的周期',
+    from: ['dormant'],
+    to: 'prepare',
+    needsSelection: false,
+    description: '创建本届并进入备招：先填名称与四个 QQ 群号，报名不会自动开启。',
+  },
+  open_apply: {
+    label: '开启报名',
+    from: ['prepare'],
+    to: 'apply',
+    needsSelection: false,
+    description: '官网「加入我们」出现报名入口。什么时候开，完全由这次点击决定。',
+  },
+  end_apply: {
+    label: '结束报名',
+    from: ['apply'],
+    to: 'apply_review',
+    needsSelection: false,
+    description: '报名入口关闭，不再收表与替换材料；名单仍可调整，确认名单后才发邀请函。不发信。',
+  },
+  confirm_written: {
+    label: '确认名单并发出笔试邀请函',
+    from: ['apply_review'],
+    to: 'written',
+    needsSelection: true,
+    description: '勾选的人进入笔试并收到笔试邀请函；未勾选的判「未通过初筛」，不发信。',
+  },
+  end_written: {
+    label: '结束笔试',
+    from: ['written'],
+    to: 'written_review',
+    needsSelection: false,
+    description: '未签到的同学自动标记「缺考」（不发信），随后解锁成绩录入与面试名单。',
+  },
+  advance_written: {
+    label: '确认面试名单并发出通知',
+    from: ['written_review'],
+    to: 'interview',
+    needsSelection: true,
+    description: '勾选的人进入面试并收到面试邀请函；未勾选的判未通过并立即收到感谢信。',
+  },
+  end_interview: {
+    label: '结束面试',
+    from: ['interview'],
+    to: 'interview_review',
+    needsSelection: false,
+    description: '未签到的同学自动标记「缺考」，随后解锁评语与录取确认。',
+  },
+  advance_interview: {
+    label: '确认录取名单',
+    from: ['interview_review'],
+    to: 'defense',
+    needsSelection: true,
+    description: '勾选的人进入预备期并收到面试通过通知；未勾选的判未通过并立即收到感谢信。',
+  },
+  end_defense: {
+    label: '结束答辩',
+    from: ['defense'],
+    to: 'defense_review',
+    needsSelection: false,
+    description: '未签到的同学自动标记「缺考」，随后解锁成绩与最终名单。',
+  },
+  advance_defense: {
+    label: '确认答辩结果',
+    from: ['defense_review'],
+    to: 'onboard',
+    needsSelection: true,
+    description: '勾选的人转正并收到正式邀请函（一次性确认链接）；未勾选的判未通过并收到感谢信。',
+  },
+  close_cycle: {
+    label: '关闭本届',
+    from: [
+      'prepare',
+      'apply',
+      'apply_review',
+      'written',
+      'written_review',
+      'interview',
+      'interview_review',
+      'defense',
+      'defense_review',
+      'onboard',
+    ],
+    to: 'dormant',
+    needsSelection: false,
+    description:
+      '导出本届完整名单 CSV 存档，然后清空报名数据、报名表文件与发信日志，回到休眠。不可撤销。',
+  },
+}
+
+export function isRecruitAction(value: string): value is RecruitAction {
+  return Object.prototype.hasOwnProperty.call(RECRUIT_ACTION_META, value)
+}
+
+/** 这个动作此刻能不能执行；能则返回 null，不能则返回原因（后台直接显示） */
+export function actionBlockedReason(
+  action: RecruitAction,
+  state: RecruitCycleState,
+  selected: number,
+): string | null {
+  const meta = RECRUIT_ACTION_META[action]
+  if (!meta.from.includes(state)) {
+    return `当前是「${RECRUIT_STATE_LABELS[state]}」，不能执行「${meta.label}」`
+  }
+  if (meta.needsSelection && selected <= 0) return '请先勾选名单'
+  return null
+}
+
+// ============================================================================
+// 十一、邮件模板
 // ============================================================================
 
 export type RecruitMailKind =
@@ -715,16 +841,16 @@ export interface RecruitMailMeta {
 
 export const RECRUIT_MAIL_META: Record<RecruitMailKind, RecruitMailMeta> = {
   written_invite: { label: '笔试邀请函', audience: '笔试名单中的同学', trigger: '确认笔试名单时发出' },
-  interview_invite: { label: '面试邀请函', audience: '笔试通过的同学', trigger: '按成绩生成面试名单时发出' },
-  interview_passed: { label: '面试通过通知', audience: '面试录取的同学', trigger: '确认面试录取名单时发出' },
+  interview_invite: { label: '面试邀请函', audience: '笔试通过的同学', trigger: '确认面试名单时发出' },
+  interview_passed: { label: '面试通过通知', audience: '面试录取的同学', trigger: '确认录取名单时发出' },
   offer: {
     label: '正式成员邀请函',
     audience: '答辩通过的同学',
-    trigger: '确认答辩名单时发出，邮件内含一次性确认链接',
+    trigger: '确认最终名单时发出，邮件内含一次性确认链接',
   },
-  thanks_written: { label: '感谢信 · 笔试', audience: '笔试未通过的同学', trigger: '按成绩生成面试名单时发出' },
-  thanks_interview: { label: '感谢信 · 面试', audience: '面试未录取的同学', trigger: '确认面试录取名单时发出' },
-  thanks_defense: { label: '感谢信 · 答辩', audience: '答辩未通过的同学', trigger: '确认答辩名单时发出' },
+  thanks_written: { label: '感谢信 · 笔试', audience: '笔试未通过的同学', trigger: '确认面试名单时发出' },
+  thanks_interview: { label: '感谢信 · 面试', audience: '面试未录取的同学', trigger: '确认录取名单时发出' },
+  thanks_defense: { label: '感谢信 · 答辩', audience: '答辩未通过的同学', trigger: '确认最终名单时发出' },
 }
 
 export interface MailTemplate {
@@ -736,20 +862,18 @@ export interface MailTemplate {
 
 export type RecruitTemplates = Record<RecruitMailKind, MailTemplate>
 
-/** 模板里可用的变量；后台「邮件模板」页会把这份清单显示给人看 */
+/**
+ * 模板里可用的变量。
+ * **没有任何时间与地点** —— 安排一律让同学看对应的 QQ 群，所以这里只给群号。
+ */
 export const RECRUIT_MAIL_VARIABLES: ReadonlyArray<{ token: string; desc: string }> = [
   { token: '{name}', desc: '同学姓名' },
   { token: '{studentId}', desc: '学号' },
   { token: '{cycleName}', desc: '本届招新名称' },
-  { token: '{writtenSessions}', desc: '笔试全部场次（每场一行：名称 · 时间 · 地点）' },
-  { token: '{writtenAt}', desc: '笔试第一场的时间' },
-  { token: '{writtenPlace}', desc: '笔试第一场的地点 / 形式' },
-  { token: '{interviewSessions}', desc: '面试全部场次（每场一行：名称 · 时间 · 地点）' },
-  { token: '{interviewAt}', desc: '面试第一场的时间' },
-  { token: '{interviewPlace}', desc: '面试第一场的地点 / 形式' },
-  { token: '{defenseStart}', desc: '预备期开始时间' },
-  { token: '{defenseEnd}', desc: '预备期结束时间' },
-  { token: '{onboardDeadline}', desc: '转正确认截止时间' },
+  { token: '{writtenGroup}', desc: '笔试通知 QQ 群号' },
+  { token: '{interviewGroup}', desc: '面试通知 QQ 群号' },
+  { token: '{probationGroup}', desc: '预备成员 QQ 群号' },
+  { token: '{formalGroup}', desc: '正式成员 QQ 群号' },
   { token: '{inviteLink}', desc: '邀请函确认链接（仅正式邀请函有值）' },
   { token: '{studio}', desc: '工作室名称' },
   { token: '{contactEmail}', desc: '工作室联系邮箱' },
@@ -766,12 +890,12 @@ export const DEFAULT_RECRUIT_TEMPLATES: RecruitTemplates = {
       '{name} 同学：',
       '',
       '你好！感谢你报名 {cycleName}，你的报名表我们已经收到并通过初筛。',
-      '现邀请你参加招新笔试，安排如下：',
+      '现邀请你参加招新笔试。',
       '',
-      '笔试安排（下面几场任选一场参加即可）：',
-      '{writtenSessions}',
+      '笔试的确切时间与地点会通过「笔试通知群」公布，请务必加群并留意群公告：',
+      '{writtenGroup}',
       '',
-      '请提前 10 分钟到达（线上笔试请提前登录）。如需调整时间，直接回复本邮件即可。',
+      '加群请备注「姓名 + 学号」。如时间有冲突，直接在群里说一声即可。',
       '',
       SIGN_DEFAULT,
     ].join('\n'),
@@ -785,10 +909,8 @@ export const DEFAULT_RECRUIT_TEMPLATES: RecruitTemplates = {
       '',
       '恭喜你通过了笔试！接下来是与我们面对面的环节。',
       '',
-      '面试安排（下面几场任选一场参加即可）：',
-      '{interviewSessions}',
-      '',
-      '请在约定时间前 5 分钟到达。如需调整时间，直接回复本邮件即可。',
+      '面试的确切时间与地点会通过「面试通知群」公布，请加群并留意群公告：',
+      '{interviewGroup}',
       '',
       SIGN_DEFAULT,
     ].join('\n'),
@@ -802,8 +924,8 @@ export const DEFAULT_RECRUIT_TEMPLATES: RecruitTemplates = {
       '',
       '恭喜！你已通过面试，正式进入 {studio} 的预备期。',
       '',
-      '预备期时间：{defenseStart} 至 {defenseEnd}',
-      '预备期结束后会安排答辩考核，具体时间另行通知。',
+      '后续安排（包括答辩时间）都会在「预备成员群」里通知，请加群：',
+      '{probationGroup}',
       '',
       '预备期里你会加入一个真实项目小组，跟着学长学姐一起做东西。',
       '欢迎随时回复本邮件提问。',
@@ -823,8 +945,10 @@ export const DEFAULT_RECRUIT_TEMPLATES: RecruitTemplates = {
       '请点击下面的专属链接，填写你的成员信息并确认加入：',
       '{inviteLink}',
       '',
-      '链接在 {onboardDeadline} 前有效，且仅可使用一次；',
-      '确认后你会立即出现在官网「团队成员」页面。',
+      '链接仅可使用一次；确认后你会立即出现在官网「团队成员」页面。',
+      '正式成员的通知都在「正式成员群」，也请一并加入：',
+      '{formalGroup}',
+      '',
       '如果链接失效，或者你对加入还有疑问，直接回复本邮件即可。',
       '',
       SIGN_DEFAULT,
@@ -897,7 +1021,7 @@ export function renderTemplate(text: string, vars: Record<string, string>): stri
   })
 }
 
-/** 模板里写了但系统不认识的变量，后台用来提示 */
+/** 模板里写了但系统不认识的变量，后台与接口都用来提示 */
 export function unknownTemplateVariables(text: string): string[] {
   const found = new Set<string>()
   for (const match of text.matchAll(VARIABLE_PATTERN)) {
@@ -907,118 +1031,74 @@ export function unknownTemplateVariables(text: string): string[] {
 }
 
 // ============================================================================
-// 九、自动流程
+// 十二、接口载荷（前后端共用，避免各写一份）
 // ============================================================================
 
-export type RecruitAutoTask =
-  /** 确认笔试名单：把报名阶段的人推进到笔试并发笔试邀请函 */
-  | 'confirm_written'
-  /** 笔试结束仍未签到 → 标记为未参加，流程结束 */
-  | 'mark_absent'
-  /** 按成绩生成面试名单：通过者发面试邀请，其余发感谢信 */
-  | 'advance_written'
-  /** 面试录取：录取者进入预备期并发面试通过通知，其余发感谢信 */
-  | 'advance_interview'
-  /** 答辩通过：转正并签发邀请函，其余发感谢信 */
-  | 'advance_defense'
-  /** 关闭本届：导出存档 → 清空报名数据 → 周期置为已结束 */
-  | 'close_cycle'
-
-/** 顺序即招新期实际的操作顺序，后台「自动流程」页也按这个顺序排卡片 */
-export const RECRUIT_AUTO_TASKS: readonly RecruitAutoTask[] = [
-  'confirm_written',
-  'mark_absent',
-  'advance_written',
-  'advance_interview',
-  'advance_defense',
-  'close_cycle',
-]
-
-export interface RecruitAutoMeta {
-  label: string
-  description: string
-  /** 是否必须人工勾选名单才能执行（成绩晋级 / 录取） */
-  needsSelection: boolean
-}
-
-export const RECRUIT_AUTO_META: Record<RecruitAutoTask, RecruitAutoMeta> = {
-  confirm_written: {
-    label: '确认笔试名单',
-    description: '把已报名的同学推进到笔试环节，并发出笔试邀请函（含时间地点）。',
-    needsSelection: false,
-  },
-  mark_absent: {
-    label: '标记未参加笔试',
-    description: '笔试结束并过了宽限期仍未签到的同学，标记为「未参加」，流程到此结束。',
-    needsSelection: false,
-  },
-  advance_written: {
-    label: '生成面试名单',
-    description:
-      '勾选进入面试的同学（可按分数线批量预选）：晋级者收到面试邀请函，其余同学收到感谢信。',
-    needsSelection: true,
-  },
-  advance_interview: {
-    label: '确认面试录取',
-    description: '在面试环节勾选录取的同学：进入预备期并收到面试通过通知，其余同学收到感谢信。',
-    needsSelection: true,
-  },
-  advance_defense: {
-    label: '确认答辩结果',
-    description: '在答辩环节勾选通过的同学：转为正式成员并收到邀请函，其余同学收到感谢信。',
-    needsSelection: true,
-  },
-  close_cycle: {
-    label: '关闭本届招新',
-    description: '导出本届完整名单存档，然后清空报名数据与报名表文件，招新模块收起。',
-    needsSelection: false,
-  },
-}
-
-/** 自动流程预览里的一行 */
-export interface RecruitAutoItem {
-  applicationId: string
+/** 公开招新状态（「加入我们」页面与首屏聚合都用它） */
+export interface RecruitPublicStatus {
+  state: RecruitCycleState
+  stateLabel: string
+  /** open = 可以提交报名表 */
+  applyOpen: boolean
+  gate: RecruitApplyGate
   name: string
-  studentId: string
-  email: string
-  /** 该同学在当前环节的成绩（原始字符串，可能没录）；前台据此做「按分数线批量勾选」 */
-  score: string
-  /** 执行后会变成的 stage / result */
-  targetStage: RecruitStage
-  targetResult: RecruitResult
-  /** 会发出的信；null 表示不发 */
-  mail: RecruitMailKind | null
-  /** 一句话说明为什么这样处理 */
-  reason: string
+  notice: string
 }
 
-export interface RecruitAutoPreview {
-  task: RecruitAutoTask
-  label: string
-  description: string
-  items: RecruitAutoItem[]
-  /** 汇总，便于页面上直接显示 */
-  summary: { total: number; mailed: number }
-  /** 不能执行时的原因（例如还没到时间、没有可处理的人）；空串表示可执行 */
-  blocked: string
+/** 某个人的进度页额外需要的信息（当前该进哪个群） */
+export interface RecruitProgressInfo {
+  state: RecruitCycleState
+  cycleName: string
+  notice: string
+  /** 该进哪个群；报名阶段为空（还没分群） */
+  groupLabel: string
+  group: string
 }
 
-// ============================================================================
-// 十、看板与导出
-// ============================================================================
+/** 后台看到的签到二维码：一个阶段至多一张有效码 */
+export interface RecruitCheckinCodeView {
+  token: string
+  stage: CheckinStage
+  stageLabel: string
+  /** 二维码里要编码的绝对地址 */
+  url: string
+  expiresAt: string
+  createdBy: string
+  createdAt: string
+}
 
-export interface RecruitBoard {
-  /** 各阶段的在池人数（未结束的） */
+export type RecruitCheckinCodeMap = Record<CheckinStage, RecruitCheckinCodeView | null>
+
+/** 一次动作执行的结果（后台弹给管理员看的汇总） */
+export interface RecruitActionResult {
+  action: RecruitAction
+  state: RecruitCycleState
+  stateLabel: string
+  /** 改了多少条报名记录 */
+  moved: number
+  mail: {
+    sent: number
+    failed: number
+    summary: string
+  }
+  /** 关闭本届时给出存档地址 */
+  archive: { url: string; total: number; members: number } | null
+}
+
+/** 后台看板的统计（漏斗 + 状态细分），由名单实时算出 */
+export interface RecruitStats {
+  state: RecruitCycleState
+  stateLabel: string
+  cycleName: string
   funnel: Record<RecruitStage, number>
-  /** 各派生状态的人数（含已结束的） */
   byLabel: Record<string, number>
-  /** 待处理事项数量（自动流程页的角标） */
-  pending: Record<RecruitAutoTask, number>
   total: number
   members: number
-  cycleName: string
-  phase: RecruitPhase
 }
+
+// ============================================================================
+// 十三、导出
+// ============================================================================
 
 /** 导出 CSV 时的列（顺序即表头顺序） —— 后台「导出名单」与关闭归档共用 */
 export const RECRUIT_EXPORT_COLUMNS: ReadonlyArray<{ key: string; label: string }> = [

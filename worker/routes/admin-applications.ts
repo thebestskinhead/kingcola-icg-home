@@ -12,8 +12,8 @@
  * 状态只有两列（stage + result），所以校验也很直接：
  *   1. result 必须是该 stage 允许的取值（STAGE_RESULTS）；
  *   2. 跨阶段只能相邻一步（canMoveStage），允许退回一步改判。
- * 成绩晋级、录取、答辩结果等批量推进走 `/api/admin/recruit/auto`（预览后执行），
- * 那里会把名单、邮件与状态一次性处理完。
+ * 整批人的晋级与录取走 `/api/admin/recruit/actions`（勾选名单后执行），
+ * 那里会把名单、邮件与整届状态一次性处理完；这里的单条改动主要用于改判与补漏。
  */
 
 import {
@@ -33,6 +33,7 @@ import {
   type RecruitStage,
 } from '../../shared/recruit'
 import {
+  CHECKIN_COLUMN,
   createApplication,
   deleteApplication,
   getApplication,
@@ -67,13 +68,6 @@ function actorOf(ctx: RequestContext): string {
 
 function requestMeta(ctx: RequestContext) {
   return { ip: clientIp(ctx.request), ua: ctx.request.headers.get('user-agent') ?? '' }
-}
-
-/** 签到时间写入哪一列 */
-const CHECKIN_COLUMN: Record<CheckinStage, 'writtenCheckinAt' | 'interviewCheckinAt' | 'defenseCheckinAt'> = {
-  written: 'writtenCheckinAt',
-  interview: 'interviewCheckinAt',
-  defense: 'defenseCheckinAt',
 }
 
 async function noticeContext(ctx: RequestContext): Promise<NoticeContext> {

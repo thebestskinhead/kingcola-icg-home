@@ -7,10 +7,9 @@ import {
   stageIndex,
   type RecruitTone,
 } from '@shared/recruit'
-import type { RecruitSchedule } from '@/api/endpoints'
 import type { Application } from '@shared/types'
 import { cn } from '@/lib/utils'
-import { ArrowRight, CalendarClock, Check, CircleDot, MapPin, X } from 'lucide-react'
+import { ArrowRight, Check, CircleDot, Users, X } from 'lucide-react'
 
 /** ISO 或北京时间字符串 → 展示用（统一按北京时间口径解） */
 function formatMoment(value: string): string {
@@ -48,18 +47,22 @@ function checkinAtOf(application: Application, stage: string): string {
 }
 
 /**
- * 报名进度：五段进度条 + 当前状态 + 本轮安排 + 我的时间线。
+ * 报名进度：五段进度条 + 当前状态 + 该进的群 + 我的时间线。
  *
- * 状态的中文名与阶段划分全部来自 `@shared/recruit`，前台不重复维护一份；
- * 笔试/面试的时间地点属于**本轮全局安排**，从接口的 `schedule` 里取。
+ * 状态的中文名与阶段划分全部来自 `@shared/recruit`，前台不重复维护一份。
+ * **刻意不展示任何时间地点**：安排一律通过对应的 QQ 群通知（还有邮件），
+ * 所以这里只告诉他「现在该进哪个群」，而不是把可能已经改期的信息钉在页面上。
  */
 export function ApplicationProgress({
   application,
-  schedule,
+  groupLabel,
+  group,
   inviteUrl,
 }: {
   application: Application
-  schedule: RecruitSchedule
+  /** 此刻该进的群（报名阶段还没有群，两个字段都是空串） */
+  groupLabel: string
+  group: string
   /** 已发出邀请函时的确认页地址 */
   inviteUrl?: string
 }) {
@@ -68,28 +71,6 @@ export function ApplicationProgress({
   const currentStage = stageIndex(application.stage)
   const finished = isApplicationFinished(application.stage, application.result)
   const failed = tone === 'failed'
-
-  /** 当前阶段的安排：告诉他下一步的时间地点 */
-  const upcoming = (() => {
-    switch (application.stage) {
-      case 'written':
-        return { title: '笔试安排', at: schedule.writtenAt, place: schedule.writtenPlace }
-      case 'interview':
-        return { title: '面试安排', at: schedule.interviewAt, place: schedule.interviewPlace }
-      case 'defense':
-        return {
-          title: '预备期',
-          at: [schedule.defenseStart, schedule.defenseEnd].filter(Boolean).join(' ~ '),
-          place: '',
-        }
-      case 'onboard':
-        return application.result === ''
-          ? { title: '确认邀请截止', at: schedule.onboardDeadline, place: '' }
-          : { title: '', at: '', place: '' }
-      default:
-        return { title: '', at: '', place: '' }
-    }
-  })()
 
   const timeline = [
     { label: '提交报名', value: application.createdAt ?? '' },
@@ -126,20 +107,21 @@ export function ApplicationProgress({
           </span>
         </div>
 
-        {upcoming.at && (
+        {group && groupLabel ? (
           <div className="mt-3 space-y-1 text-sm text-foreground/80">
-            <div className="flex items-center gap-2">
-              <CalendarClock className="h-4 w-4 shrink-0 text-accent" />
-              <span className="font-medium">{upcoming.title}</span>
-              <span>{upcoming.at}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Users className="h-4 w-4 shrink-0 text-accent" />
+              <span className="font-medium">{groupLabel}</span>
+              <span className="font-mono">{group}</span>
             </div>
-            {upcoming.place && (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <MapPin className="h-4 w-4 shrink-0" />
-                <span>{upcoming.place}</span>
-              </div>
-            )}
+            <p className="text-xs text-muted-foreground">
+              具体时间与地点都在群里通知，请尽快加群并留意群公告。
+            </p>
           </div>
+        ) : (
+          <p className="mt-3 text-xs text-muted-foreground">
+            {finished ? '' : '下一步的安排会通过邮件与对应的 QQ 群通知你。'}
+          </p>
         )}
       </div>
 
@@ -218,7 +200,7 @@ export function ApplicationProgress({
           ? tone === 'done'
             ? '欢迎加入工作室！后续通知会发到你的邮箱。'
             : '本次招新到这里就结束了。感谢你的参与，欢迎关注我们后续的公开活动。'
-          : '进度会随笔试、面试、答辩的推进自动更新，重要的安排会同时发到你的邮箱。'}
+          : '进度会随笔试、面试、答辩的推进自动更新；重要的安排会同时发到你的邮箱与对应的 QQ 群。'}
       </p>
     </div>
   )
