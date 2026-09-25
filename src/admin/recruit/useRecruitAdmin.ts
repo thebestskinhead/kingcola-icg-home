@@ -49,6 +49,7 @@ import {
   adminRunRecruitAction,
   adminSaveRecruit,
   adminUpdateApplication,
+  adminUploadApplicationDoc,
   type AdminApplication,
   type MailLogRow,
   type UpdateApplicationBody,
@@ -243,6 +244,24 @@ export function useRecruitAdmin() {
     [load],
   )
 
+  /** 后补 / 替换报名表（补录时没带材料、或本人换了版本） */
+  const uploadDoc = useCallback(
+    async (id: string, file: File) => {
+      try {
+        const result = await adminUploadApplicationDoc(id, file)
+        await load()
+        toast.success('报名表已更新', {
+          description: `${result.application.fileName}（旧文件已删除）`,
+        })
+        return true
+      } catch (err) {
+        toast.error(describeError(err, '上传失败'))
+        return false
+      }
+    },
+    [load],
+  )
+
   const deleteApp = useCallback(
     async (id: string, name: string) => {
       try {
@@ -345,6 +364,7 @@ export function useRecruitAdmin() {
     issueCode,
     revokeCode,
     updateApp,
+    uploadDoc,
     deleteApp,
     bulk,
     notify,

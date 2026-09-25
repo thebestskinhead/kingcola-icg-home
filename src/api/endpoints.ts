@@ -505,6 +505,12 @@ export function adminCreateApplication(body: ManualApplicationInput, file?: File
 export interface UpdateApplicationBody {
   stage?: RecruitStage
   result?: RecruitResult
+  /**
+   * 「改全部资料」：姓名 / 学号 / 联系方式都能改（学号撞别人会返回 409 `ALREADY_EXISTS`）。
+   * 报名表本身不在这里改，走 `adminUploadApplicationDoc`。
+   */
+  name?: string
+  studentId?: string
   /** 勾选 / 取消签到（value: false 表示取消） */
   checkin?: { stage: CheckinStage; value?: boolean }
   writtenScore?: string
@@ -564,6 +570,23 @@ export function adminDeleteApplication(id: string) {
 /** 报名表下载地址：需管理员会话，直接交给浏览器打开/下载即可 */
 export function applicationFileUrl(id: string) {
   return `/api/admin/applications/${encodeURIComponent(id)}/file`
+}
+
+/**
+ * 后补 / 替换报名表（multipart）。
+ *
+ * 存在的理由：补录时同学常真的没带材料，而「报名时上传」是过去唯一的入口 ——
+ * 错过就再也补不上。校验与官网报名完全一致（大小 / 后缀 / 文件头魔数），
+ * 成功后**旧文件会被删掉**，下载名统一为「姓名+学号+报名表」。
+ */
+export function adminUploadApplicationDoc(id: string, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return apiRequest<{ application: AdminApplication }>(
+    `/api/admin/applications/${encodeURIComponent(id)}/file`,
+    { method: 'POST', body: form },
+    { timeoutMs: 120_000 },
+  )
 }
 
 /** 给指定邮箱发一封测试邮件（`to` 留空则用站点联系邮箱），用于验证 SMTP 配置 */

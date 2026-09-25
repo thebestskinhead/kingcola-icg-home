@@ -35,6 +35,18 @@ import type { SiteConfig } from '@shared/types'
 import { adminGetConfig, adminUpdateConfig } from '@/api/endpoints'
 import type { RecruitAdmin } from './useRecruitAdmin'
 
+/**
+ * 变量此刻的值：本届的取本价值（只读，改在流程页），逐人的给一句说明。
+ * 没值就老实说「还没配置」——发信时它会保持原文（见 `renderTemplate`）。
+ */
+function variableValue(token: string, vars: Record<string, string>): { text: string; ready: boolean } {
+  const key = token.slice(1, -1)
+  if (key === 'name' || key === 'studentId') return { text: '逐人不同（按收信人渲染）', ready: true }
+  if (key === 'inviteLink') return { text: '逐人签发，仅正式邀请函有值', ready: true }
+  const value = (vars[key] ?? '').trim()
+  return value ? { text: value, ready: true } : { text: '还没配置（发送时保持原文）', ready: false }
+}
+
 /** 「招新与加入我们」这一块改的是站点配置（与招新周期无关，休眠期也能改） */
 type JoinCopy = Pick<
   SiteConfig,
@@ -166,13 +178,31 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
               </div>
 
               <div className="rounded-xl border border-border bg-card p-4">
-                <h3 className="mb-2 text-xs font-semibold">可用变量</h3>
-                <ul className="space-y-1">
-                  {RECRUIT_MAIL_VARIABLES.map((item) => (
-                    <li key={item.token} className="text-[11px] text-muted-foreground">
-                      <code className="text-foreground">{item.token}</code> {item.desc}
-                    </li>
-                  ))}
+                <h3 className="mb-1 text-xs font-semibold">可用变量</h3>
+                <p className="mb-2 text-[11px] leading-snug text-muted-foreground">
+                  本届的变量（名称、四个群号）在这里只读显示当前值 —— 改它们请去「流程 → 本届信息」。
+                  没配置的值在发信时会保持原文，不会变成空白。
+                </p>
+                <ul className="space-y-1.5">
+                  {RECRUIT_MAIL_VARIABLES.map((item) => {
+                    const current = variableValue(item.token, previewVars)
+                    return (
+                      <li key={item.token} className="text-[11px]">
+                        <div className="flex items-baseline gap-1.5">
+                          <code className="shrink-0 text-foreground">{item.token}</code>
+                          <span
+                            className={cn(
+                              'min-w-0 truncate',
+                              current.ready ? 'text-muted-foreground' : 'text-amber-700',
+                            )}
+                          >
+                            {current.text}
+                          </span>
+                        </div>
+                        <div className="text-muted-foreground/80">{item.desc}</div>
+                      </li>
+                    )
+                  })}
                 </ul>
               </div>
             </div>

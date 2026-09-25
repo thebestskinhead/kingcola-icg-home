@@ -155,7 +155,9 @@ interface UpdateApplicationBody {
   note?: string
   /** 补发某封信（状态不变也能发） */
   notice?: string
-  /** 编辑时是否顺手改联系方式 */
+  /** 「改全部资料」：姓名 / 学号 / 联系方式都能改（学号要过唯一性） */
+  name?: string
+  studentId?: string
   email?: string
   phone?: string
   qq?: string
@@ -185,6 +187,26 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
     'qq',
   ] as const) {
     if (body[key] !== undefined) patch[key] = String(body[key] ?? '').trim()
+  }
+
+  // ---- 身份：姓名可改，学号可改但要过唯一性 ----
+  // 补录时听错学号、或本人改名都常见；官网报的人也可能要更正。
+  if (body.name !== undefined) {
+    const name = String(body.name).trim()
+    if (!name) return fail(400, 'VALIDATION_FAILED', '姓名不能为空')
+    patch.name = name
+  }
+
+  if (body.studentId !== undefined) {
+    const studentId = String(body.studentId).trim()
+    if (!studentId) return fail(400, 'VALIDATION_FAILED', '学号不能为空')
+    if (studentId !== record.studentId) {
+      const occupied = await getApplicationByStudentId(ctx.env, studentId)
+      if (occupied && occupied.id !== record.id) {
+        return fail(409, 'ALREADY_EXISTS', `学号 ${studentId} 已经在名单里（${occupied.name}），不能重复`)
+      }
+      patch.studentId = studentId
+    }
   }
 
   // ---- 状态：stage + result ----
@@ -243,7 +265,37 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
     }
   }
 
-  const updated = await updateApplication(ctx.env, record.id, patch)
+  // ---- 格式校验：联系方式的格式任何时候都不该垮掉；留空仍然允许（信息可以后补） ----
+  if (patch.email && !APPLICATION_EMAIL_PATTERN.test(patch.email)) {
+    return fail(400, 'VALIDATION_FAILED', '邮箱格式不正确')
+  }
+  if (patch.phone && !APPLICATION_PHONE_PATTERN.test(patch.phone)) {
+    return fail(400, 'VALIDATION_FAILED', '手机号应为 11 位数字')
+  }
+  if (patch.qq && !APPLICATION_QQ_PATTERN.test(patch.qq)) {
+    return fail(400, 'VALIDATION_FAILED', 'QQ 号应为 5–12 位数字')
+  }
+
+  // 改了姓名 / 学号就把报名表的**下载名**一起改掉：那份文件叫「姓名+学号+报名表」，
+  // 否则会出现「资料里是张三、下载下来写着李四」。
+  const nextName = patch.name ?? record.name
+  const nextStudentId = patch.studentId ?? record.studentId
+  if (record.fileUrl && (nextName !== record.name || nextStudentId !== record.studentId)) {
+    const ext = record.fileName.split('.').pop()?.toLowerCase() || 'pdf'
+    patch.fileName = applicationDocFileName(nextName, nextStudentId, ext)
+  }
+
+  let updated: ApplicationRecord | null
+  try {
+    updated = await updateApplication(ctx.env, record.id, patch)
+  } catch (error) {
+    // student_id 上有唯一约束：万一上面检查过之后被人抢先占了，这里兜住并给出人话
+    if (patch.studentId && (await getApplicationByStudentId(ctx.env, patch.studentId))) {
+      return fail(409, 'ALREADY_EXISTS', `学号 ${patch.studentId} 已经在名单里了`)
+    }
+    console.error('[applications] 更新失败', { id: record.id, error })
+    return fail(500, 'UPDATE_FAILED', '保存失败，请稍后重试')
+  }
   if (!updated) return fail(404, 'NOT_FOUND', '报名记录不存在')
 
   // ---- 邮件 ----
@@ -261,9 +313,14 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
     )
   }
 
+  // 「改了资料」值得单独记一笔：它是不走状态流转的一类改动，审计里要能一眼认出
+  const profileChanged = [patch.name, patch.studentId, patch.email, patch.phone, patch.qq].some(
+    (value) => value !== undefined,
+  )
+
   await writeAudit(ctx.env, {
     actor: actorOf(ctx),
-    action: statusChanged ? 'advance_application' : 'update_application',
+    action: statusChanged ? 'advance_application' : profileChanged ? 'update_profile' : 'update_application',
     resource: 'applications',
     targetId: record.id,
     detail: [
@@ -271,6 +328,7 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
       statusChanged
         ? `${applicationLabel(record.stage, record.result)} → ${applicationLabel(nextStage, nextResult)}`
         : '字段更新',
+      profileChanged && `${updated.name}(${updated.studentId}) 资料已改`,
       mail ? `mail=${mail.code}` : '',
     ]
       .filter(Boolean)
@@ -298,8 +356,8 @@ interface CreateApplicationBody {
  *
  * 两种情形共用一个入口，靠 `stage` 区分：
  *   - 报名阶段的补录（默认）：人已经在现场了，不要求报名表、联系方式全部可选；
- *   - 笔试现场补录（stage=written）：**邮箱 / 手机 / QQ / 报名表都必填** ——
- *     他跳过了报名，材料只能现场补齐，否则后面发通知找不到人；
+ *   - 笔试现场补录（stage=written）：**邮箱 / 手机 / QQ 必填**（后面发通知全靠它），
+ *     **报名表可以先空着** —— 现场常常真拿不到，之后在「名单 → 改全部资料」里补上/替换即可；
  *     录入即视为已参加笔试（直接写好签到时间），不会被「结束笔试」的缺考扫描误伤。
  *
  * 共同点：`source = 'manual'`，名单里带「补录」标记，一眼能和官网报名区分开。
@@ -350,6 +408,7 @@ export async function createApplicationAdmin(ctx: RequestContext): Promise<Respo
   if (walkIn && (!email || !phone || !qq)) {
     return fail(400, 'VALIDATION_FAILED', '笔试现场补录需要邮箱、手机、QQ 都填上（后面发通知要用）')
   }
+  // 报名表刻意**不**必填：现场往往真拿不到，之后在「名单 → 改全部资料」里补就行
   if (email && !APPLICATION_EMAIL_PATTERN.test(email)) {
     return fail(400, 'VALIDATION_FAILED', '邮箱格式不正确')
   }
@@ -358,9 +417,6 @@ export async function createApplicationAdmin(ctx: RequestContext): Promise<Respo
   }
   if (qq && !APPLICATION_QQ_PATTERN.test(qq)) {
     return fail(400, 'VALIDATION_FAILED', 'QQ 号应为 5–12 位数字')
-  }
-  if (walkIn && !file) {
-    return fail(400, 'NO_FILE', '笔试现场补录需要上传他的报名表（PDF / DOCX）')
   }
 
   // 报名表（可选，但带着就必须是真文件）：与官网报名同一套校验与存桶规则
@@ -611,6 +667,93 @@ export async function notifyApplicationsAdmin(ctx: RequestContext): Promise<Resp
   })
 
   return ok({ summary: summarizeMailResults(results), results })
+}
+
+// ===== 报名表：上传替换 / 下载 / 删除 =====
+
+/**
+ * 替换报名表（后台「改全部资料」的一部分）。
+ *
+ * 为什么需要它：补录时同学手头没带材料、或官网报的人后来换了版本 ——
+ * 之前「报名时上传」是唯一入口，错过就再也补不上，名单里那份材料只能一直缺着。
+ *
+ * 与官网报名**同一套校验**（大小 / 后缀 / 文件头魔数），成功后删掉旧文件，
+ * 下载名统一是「姓名+学号+报名表」（改了姓名也会跟着变，见 updateApplicationAdmin）。
+ */
+export async function uploadApplicationDocAdmin(ctx: RequestContext): Promise<Response> {
+  const record = await getApplication(ctx.env, ctx.params.id)
+  if (!record) return fail(404, 'NOT_FOUND', '报名记录不存在')
+
+  let form: FormData
+  try {
+    form = await ctx.request.formData()
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    return fail(400, 'INVALID_BODY', `请求必须是 multipart/form-data 表单：${reason}`)
+  }
+
+  let file = form.get('file')
+  if (!(file instanceof File)) {
+    // 与其它上传口同样的容错：个别客户端上传的文件片段不带 name
+    for (const value of form.values()) {
+      if (value instanceof File && value.size > 0) {
+        file = value
+        break
+      }
+    }
+  }
+  if (!(file instanceof File)) return fail(400, 'NO_FILE', '请上传报名表文件（PDF / DOCX）')
+  if (file.size === 0) return fail(400, 'EMPTY_FILE', '报名表文件内容为空')
+  if (file.size > APPLICATION_DOC_LIMIT) {
+    return fail(413, 'TOO_LARGE', `报名表不能超过 ${formatLimit(APPLICATION_DOC_LIMIT)}`)
+  }
+
+  const filename = file.name || ''
+  if (filename && !/\.(pdf|docx)$/i.test(filename)) {
+    return fail(415, 'UNSUPPORTED_TYPE', '仅支持 .pdf 或 .docx 文件')
+  }
+
+  const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+  const kind = sniffDocument(head, filename)
+  if (!kind) {
+    return fail(415, 'UNSUPPORTED_TYPE', '文件校验失败：仅支持 PDF / DOCX 格式的真实文件，仅改后缀无效')
+  }
+  if (!(await storageReady(ctx.env, 'applications'))) {
+    return fail(503, 'STORAGE_UNAVAILABLE', '对象存储未接通，暂时无法保存报名表')
+  }
+
+  const storage = await getStorage(ctx.env, 'applications')
+  const key = buildObjectKey(APPLICATION_DOC_SCOPE, filename || 'application', kind.ext)
+  await storage.put(key, file, { contentType: kind.mime })
+
+  let updated: ApplicationRecord | null
+  try {
+    updated = await updateApplication(ctx.env, record.id, {
+      fileUrl: storage.objectUrl(key),
+      fileName: applicationDocFileName(record.name, record.studentId, kind.ext),
+      fileSize: file.size,
+    })
+  } catch (error) {
+    // 落库失败就把刚传上去的删掉，别在桶里留孤儿对象
+    await storage.delete(key).catch(() => {})
+    console.error('[applications] 报名表替换失败', { id: record.id, error })
+    return fail(500, 'UPDATE_FAILED', '报名表保存失败，请稍后重试')
+  }
+  if (!updated) return fail(404, 'NOT_FOUND', '报名记录不存在')
+
+  // **新文件落库成功之后**才删旧的：顺序反了的话，一次失败就把人家原来的材料弄丢了
+  if (record.fileUrl) await deleteStoredFile(ctx.env, record.fileUrl)
+
+  await writeAudit(ctx.env, {
+    actor: actorOf(ctx),
+    action: 'replace_application_doc',
+    resource: 'applications',
+    targetId: record.id,
+    detail: `${updated.name}(${updated.studentId}) 报名表 → ${updated.fileName} ${(file.size / 1024).toFixed(1)}KB`,
+    ...requestMeta(ctx),
+  })
+
+  return ok({ application: toAdminView(updated, ctx.url.origin) })
 }
 
 // ===== 下载 / 删除 =====

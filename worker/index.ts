@@ -27,6 +27,7 @@ import {
   listApplicationsAdmin,
   notifyApplicationsAdmin,
   updateApplicationAdmin,
+  uploadApplicationDocAdmin,
 } from './routes/admin-applications'
 import {
   createContent,
@@ -160,6 +161,8 @@ const routes: RouteDef[] = [
   { method: 'GET', path: '/api/admin/applications/:id', handler: getApplicationAdmin, auth: 'admin' },
   { method: 'PUT', path: '/api/admin/applications/:id', handler: updateApplicationAdmin, auth: 'admin' },
   { method: 'GET', path: '/api/admin/applications/:id/file', handler: downloadApplicationFile, auth: 'admin' },
+  // 后补 / 替换报名表（补录时没带材料的那份，或本人换了版本）；成功后旧文件会被删掉
+  { method: 'POST', path: '/api/admin/applications/:id/file', handler: uploadApplicationDocAdmin, auth: 'admin' },
   { method: 'DELETE', path: '/api/admin/applications/:id', handler: deleteApplicationAdmin, auth: 'admin' },
 
   // ---- 后台：内容 CRUD（资源无关，由 shared/resources.ts 驱动） ----

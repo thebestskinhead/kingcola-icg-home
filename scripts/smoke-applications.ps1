@@ -164,6 +164,28 @@ try {
     $dup = (Api 'POST' '/api/admin/applications' @{ name = '重复补录'; studentId = "SMD$stamp" } $jar)
     Check '同一学号重复补录被拒（409）' ($dup.ok -eq $false -and $dup.error.code -eq 'ALREADY_EXISTS')
 
+    # ===== 4b. 改全部资料 + 报名表后补 / 替换 =====
+    Write-Host "`n4b) 改资料与报名表后补"
+    $manualId = $manual.application.id
+
+    # 补录时没带材料 —— 之后必须能补上，否则那份材料永远缺着
+    Check '给补录记录后补报名表（200）' ((Status 'POST' "/api/admin/applications/$manualId/file" $jar '' @{ file = "@$pdfPath;type=application/pdf" }) -eq '200')
+    $withDoc = (Api 'GET' "/api/admin/applications/$manualId" $null $jar).data.application
+    Check '报名表入库并命名「姓名+学号+报名表」' ($withDoc.fileUrl -ne '' -and $withDoc.fileName -eq "现场补录丁+SMD$stamp+报名表.pdf") $withDoc.fileName
+
+    # 改全部资料：姓名 / 学号 / 联系方式
+    $edited = (Api 'PUT' "/api/admin/applications/$manualId" @{ name = '丁同学'; studentId = "SMDX$stamp"; email = 'ding@example.edu.cn'; phone = '13800000011'; qq = '123459' } $jar).data.application
+    Check '改全部资料（姓名 / 学号 / 联系方式都生效）' ($edited.name -eq '丁同学' -and $edited.studentId -eq "SMDX$stamp" -and $edited.email -eq 'ding@example.edu.cn') "$($edited.name)/$($edited.studentId)"
+    Check '改姓名学号后报名表下载名跟着变' ($edited.fileName -eq "丁同学+SMDX$stamp+报名表.pdf") $edited.fileName
+    Check '邮箱格式不对会被拒（400）' ((Api 'PUT' "/api/admin/applications/$manualId" @{ email = 'not-an-email' } $jar).error.code -eq 'VALIDATION_FAILED')
+    Check '学号与别人重复被拦下（409）' ((Api 'PUT' "/api/admin/applications/$manualId" @{ studentId = $students[0].id } $jar).error.code -eq 'ALREADY_EXISTS')
+
+    # 替换报名表：指向新对象（旧文件被删）
+    $beforeUrl = $edited.fileUrl
+    $null = Status 'POST' "/api/admin/applications/$manualId/file" $jar '' @{ file = "@$pdfPath;type=application/pdf" }
+    $afterUrl = (Api 'GET' "/api/admin/applications/$manualId" $null $jar).data.application.fileUrl
+    Check '替换报名表后指向新文件' ($afterUrl -ne '' -and $afterUrl -ne $beforeUrl)
+
     # ===== 5. 结束报名 → 确认笔试名单 =====
     Write-Host "`n5) 结束报名与确认笔试名单"
     $ended = (Api 'POST' '/api/admin/recruit/actions' @{ action = 'end_apply' } $jar).data
@@ -204,6 +226,10 @@ try {
     # 笔试现场补录（带报名表）
     $walkin = (Status 'POST' '/api/admin/applications' $jar '' @{ name = '现场补录戊'; studentId = "SME$stamp"; email = 'e@example.edu.cn'; phone = '13800000010'; qq = '123458'; stage = 'written'; file = "@$pdfPath;type=application/pdf" })
     Check '笔试现场补录（带报名表，201）' ($walkin -eq '201') $walkin
+
+    # 现场真拿不到材料也要能先录入 —— 材料之后在「名单 → 详情 · 改资料」里补
+    $walkinNoDoc = (Status 'POST' '/api/admin/applications' $jar '' @{ name = '现场补录己'; studentId = "SMF$stamp"; email = 'f@example.edu.cn'; phone = '13800000012'; qq = '123460'; stage = 'written' })
+    Check '笔试现场补录允许先不交报名表（201）' ($walkinNoDoc -eq '201') $walkinNoDoc
 
     # 本届信息（名称 / 群号）属于流程，不属于设置页：**任何阶段都能改**，改完立即生效
     $renamed = (Api 'PUT' '/api/admin/recruit' @{ cycle = @{ groups = @{ written = '710000009'; interview = '710000002'; probation = '710000003'; formal = '710000004' } } } $jar).data

@@ -69,8 +69,14 @@ const COLUMNS: ReadonlyArray<readonly [keyof ApplicationRecord, string]> = [
 const COLUMN_OF = new Map<string, string>(COLUMNS.map(([key, column]) => [key, column]))
 const SELECT_LIST = COLUMNS.map(([, column]) => column).join(', ')
 
-/** 更新时不允许改的列（主键 / 学号 / 创建时间） */
-const IMMUTABLE_KEYS = new Set<string>(['id', 'studentId', 'createdAt'])
+/**
+ * 更新时不允许改的列（主键 / 创建时间）。
+ *
+ * **姓名与学号允许改**：补录时听错/写错、或本人改名字都常见，
+ * 而「资料能不能改」不该由发现渠道决定 —— 官网报的人管理员也能改（后台统一走「改全部资料」）。
+ * 学号的唯一性由路由层校验（冲突返回 409），这里不拦。
+ */
+const IMMUTABLE_KEYS = new Set<string>(['id', 'createdAt'])
 
 function decodeValue(key: keyof ApplicationRecord, raw: unknown): unknown {
   if (key === 'fileSize') return Number(raw) || 0
@@ -143,7 +149,8 @@ export async function createApplication(env: Env, input: NewApplication): Promis
  * 局部更新：只写传入的字段。
  * 键必须在 COLUMNS 白名单里，否则直接忽略（杜绝拼出任意列名）。
  */
-export type ApplicationPatch = Partial<Omit<ApplicationRecord, 'id' | 'studentId' | 'createdAt'>>
+/** 局部更新：`id` 与 `createdAt` 不可改，其余（含姓名 / 学号 / 联系方式）都能改 */
+export type ApplicationPatch = Partial<Omit<ApplicationRecord, 'id' | 'createdAt'>>
 
 export async function updateApplication(
   env: Env,

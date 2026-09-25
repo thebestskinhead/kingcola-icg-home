@@ -889,8 +889,11 @@ function ManualEntryButton({ admin, stage }: { admin: RecruitAdmin; stage: 'appl
   const [saving, setSaving] = useState(false)
 
   const walkIn = stage === 'written'
+  // 报名表刻意不必填：现场常常真拿不到，之后在「名单 → 详情 · 改资料」里补就行
   const ready =
-    form.name.trim() && form.studentId.trim() && (!walkIn || (form.email.trim() && form.phone.trim() && form.qq.trim() && file))
+    form.name.trim() &&
+    form.studentId.trim() &&
+    (!walkIn || (form.email.trim() && form.phone.trim() && form.qq.trim()))
 
   return (
     <>
@@ -900,8 +903,8 @@ function ManualEntryButton({ admin, stage }: { admin: RecruitAdmin; stage: 'appl
         </Button>
         <span className="text-[11px] text-muted-foreground">
           {walkIn
-            ? '给没赶上报名但来考了、且带报名表的人：邮箱 / 手机 / QQ / 报名表全部必填，录入即视为已参加（无需签到）。'
-            : '同一学号重复提交 = 替换材料并删除旧文件；这里补录的人也会一起进笔试名单。'}
+            ? '给没赶上报名但来考了的人：邮箱 / 手机 / QQ 必填，报名表可后补；录入即视为已参加（无需签到）。'
+            : '补录的人会和官网报名的人一起进笔试名单；学号已经在名单里会被拦下。'}
         </span>
       </div>
 
@@ -911,8 +914,8 @@ function ManualEntryButton({ admin, stage }: { admin: RecruitAdmin; stage: 'appl
             <DialogTitle>{walkIn ? '补录考生（笔试现场）' : '补录未报名考生'}</DialogTitle>
             <DialogDescription>
               {walkIn
-                ? '录入即视为已参加笔试，不会被缺考扫描误伤；后续照常录成绩、进面试名单。'
-                : '人已经站在现场了：不要求报名表，联系方式缺什么后补。'}
+                ? '邮箱 / 手机 / QQ 必填（后面发通知全靠它）；录入即视为已参加笔试，不会被缺考扫描误伤。材料没带齐也没关系，之后到「名单 → 详情 · 改资料」补齐即可。'
+                : '人已经站在现场了：联系方式与报名表缺什么后补 —— 之后随时能在「名单 → 详情 · 改资料」里补或改。'}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -936,17 +939,18 @@ function ManualEntryButton({ admin, stage }: { admin: RecruitAdmin; stage: 'appl
               <Label className="text-xs">QQ{walkIn ? ' *' : '（选填）'}</Label>
               <Input value={form.qq} onChange={(event) => setForm({ ...form, qq: event.target.value })} />
             </div>
-            {walkIn && (
-              <div className="grid gap-1.5">
-                <Label className="text-xs">报名表（PDF / DOCX）*</Label>
-                <Input
-                  type="file"
-                  accept=".pdf,.docx"
-                  className="h-9 text-xs"
-                  onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-                />
-              </div>
-            )}
+            <div className="grid gap-1.5">
+              <Label className="text-xs">报名表（PDF / DOCX，可后补）</Label>
+              <Input
+                type="file"
+                accept=".pdf,.docx"
+                className="h-9 text-xs"
+                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                手头有就传、没有就先空着 —— 之后在「名单 → 详情 · 改资料」里补上或替换。
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setOpen(false)}>
@@ -967,12 +971,12 @@ function ManualEntryButton({ admin, stage }: { admin: RecruitAdmin; stage: 'appl
                       qq: form.qq.trim(),
                       stage,
                     },
-                    walkIn ? file : null,
+                    file,
                   )
                   toast.success('已补录', {
                     description: walkIn
-                      ? '录入即视为已参加笔试，后续照常推进。'
-                      : '确认名单时会和官网报名的人一起推进。',
+                      ? '录入即视为已参加笔试；缺的材料可以在「名单 → 详情 · 改资料」里补。'
+                      : '确认名单时会和官网报名的人一起推进；资料缺什么都能在「名单 → 详情 · 改资料」里补。',
                   })
                   setForm({ name: '', studentId: '', email: '', phone: '', qq: '' })
                   setFile(null)

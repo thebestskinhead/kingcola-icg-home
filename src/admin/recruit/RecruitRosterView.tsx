@@ -58,7 +58,20 @@ import {
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { Check, Copy, Download, FileText, Loader2, Mail, Search, Send, Trash2, UserMinus, UserX } from 'lucide-react'
+import {
+  Check,
+  Copy,
+  Download,
+  FileText,
+  Loader2,
+  Mail,
+  Save,
+  Search,
+  Send,
+  Trash2,
+  UserMinus,
+  UserX,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import {
   adminGetApplication,
@@ -127,7 +140,8 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
         <div>
           <h1 className="font-display text-2xl font-bold">名单</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            跨阶段的全量数据：筛选、搜索、导出 CSV，勾选后批量处理，点开某个人看全部材料与发信记录。
+            跨阶段的全量数据：筛选、搜索、导出 CSV，勾选后批量处理。
+            点「详情 · 改资料」可以**补 / 改这个人的任何信息**（含报名表）—— 补录时没带齐的东西都在那里补。
           </p>
         </div>
         <Button
@@ -321,7 +335,7 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-1">
                     <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setDetailId(app.id)}>
-                      详情
+                      详情 · 改资料
                     </Button>
                     {app.fileName && (
                       <Button
@@ -487,6 +501,19 @@ function AppDetailDialog({
     defenseNote: app.defenseNote,
   })
   const [remark, setRemark] = useState(app.note)
+  /**
+   * 资料草稿：姓名 / 学号 / 联系方式。
+   * 与成绩评语分开保存（各有各的按钮）—— 一类是「这个人的信息」，一类是「这一轮的结论」。
+   */
+  const [profile, setProfile] = useState({
+    name: app.name,
+    studentId: app.studentId,
+    email: app.email,
+    phone: app.phone,
+    qq: app.qq,
+  })
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [mailKind, setMailKind] = useState<RecruitMailKind | ''>('')
   const [mails, setMails] = useState<MailLogRow[]>([])
   const [saving, setSaving] = useState(false)
@@ -509,6 +536,15 @@ function AppDetailDialog({
       await admin.updateApp(app.id, { ...scores, ...notes, note: remark })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const saveProfile = async () => {
+    setSavingProfile(true)
+    try {
+      await admin.updateApp(app.id, profile)
+    } finally {
+      setSavingProfile(false)
     }
   }
 
@@ -609,33 +645,117 @@ function AppDetailDialog({
             </div>
           </section>
 
-          {/* 联系方式与材料 */}
+          {/* 资料（可修改）：补录时没拿到的信息与材料，都在这里后补；学号撞人会被后端拦下 */}
           <section className="rounded-lg border border-border px-4 py-3">
-            <h3 className="mb-2 text-xs font-semibold text-muted-foreground">联系方式与材料</h3>
-            <div className="grid gap-2 text-xs sm:grid-cols-2">
-              <div>邮箱：{app.email || '—'}</div>
-              <div>手机：{app.phone || '—'}</div>
-              <div>QQ：{app.qq || '—'}</div>
-              <div>报名时间：{formatTime(app.createdAt ?? '')}</div>
+            <div className="mb-3 flex flex-wrap items-baseline gap-2">
+              <h3 className="text-xs font-semibold text-muted-foreground">资料（可修改）</h3>
+              <span className="text-[11px] text-muted-foreground">
+                补录时没拿到的东西可以后补；学号与别人重复时会被拦下
+              </span>
             </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-xs">
-              <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-              {app.fileName ? (
-                <>
-                  <span className="font-medium">{app.fileName}</span>
-                  <span className="text-muted-foreground">{formatSize(app.fileSize)}</span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 gap-1 text-xs"
-                    onClick={() => window.open(applicationFileUrl(app.id), '_blank')}
-                  >
-                    <Download className="h-3 w-3" /> 下载
-                  </Button>
-                </>
-              ) : (
-                <span className="text-muted-foreground">没有报名表（补录人员可不交）</span>
-              )}
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label className="text-xs">姓名</Label>
+                <Input
+                  className="h-8 text-xs"
+                  value={profile.name}
+                  onChange={(event) => setProfile({ ...profile, name: event.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-xs">学号</Label>
+                <Input
+                  className="h-8 text-xs"
+                  value={profile.studentId}
+                  onChange={(event) => setProfile({ ...profile, studentId: event.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-xs">邮箱</Label>
+                <Input
+                  className="h-8 text-xs"
+                  placeholder="后面发通知要用"
+                  value={profile.email}
+                  onChange={(event) => setProfile({ ...profile, email: event.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-xs">手机</Label>
+                <Input
+                  className="h-8 text-xs"
+                  value={profile.phone}
+                  onChange={(event) => setProfile({ ...profile, phone: event.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-xs">QQ</Label>
+                <Input
+                  className="h-8 text-xs"
+                  value={profile.qq}
+                  onChange={(event) => setProfile({ ...profile, qq: event.target.value })}
+                />
+              </div>
+              <div className="flex items-end justify-between gap-2 text-[11px] text-muted-foreground">
+                <span>报名时间 {formatTime(app.createdAt ?? '')}</span>
+                <Button
+                  size="sm"
+                  className="h-8 gap-1"
+                  disabled={savingProfile}
+                  onClick={() => void saveProfile()}
+                >
+                  {savingProfile ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                  保存资料
+                </Button>
+              </div>
+            </div>
+
+            {/* 报名表：后补 / 替换（与官网报名同一套校验，成功后旧文件会被删掉） */}
+            <div className="mt-3 space-y-2 border-t border-border pt-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                {app.fileName ? (
+                  <>
+                    <span className="font-medium">{app.fileName}</span>
+                    <span className="text-muted-foreground">{formatSize(app.fileSize)}</span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 gap-1 text-xs"
+                      onClick={() => window.open(applicationFileUrl(app.id), '_blank')}
+                    >
+                      <Download className="h-3 w-3" /> 下载
+                    </Button>
+                  </>
+                ) : (
+                  <span className="text-amber-700">还没有报名表 —— 现场没带或是在这里补上</span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  type="file"
+                  accept=".pdf,.docx"
+                  disabled={uploading}
+                  className="h-8 max-w-60 text-xs"
+                  onChange={(event) => {
+                    const picked = event.target.files?.[0]
+                    // 选完就清空 input，否则同一个文件连选两次不会再触发 change
+                    event.target.value = ''
+                    if (!picked) return
+                    void (async () => {
+                      setUploading(true)
+                      try {
+                        await admin.uploadDoc(app.id, picked)
+                      } finally {
+                        setUploading(false)
+                      }
+                    })()
+                  }}
+                />
+                {uploading && <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />}
+                <span className="text-[11px] text-muted-foreground">
+                  {app.fileUrl ? '选文件即替换（旧文件会被删掉）' : '选文件即上传'}，PDF / DOCX，单个不超过 20MB
+                </span>
+              </div>
             </div>
           </section>
 
