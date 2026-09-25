@@ -235,8 +235,9 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
     if (!column) return fail(400, 'INVALID_STAGE', `未知的签到阶段：${checkinStage}`)
     const on = body.checkin?.value !== false
     patch[column] = on ? nowIso : ''
-    // 补勾签到：结果推进到「已参加」（已有结论的不覆盖）
-    if (on && patch.result === undefined && record.result === '') {
+    // 补勾签到：结果推进到「已参加」；被标过「缺考」的一并撤销 ——
+    // 人确实来过就不该因为漏签被刷掉（后台按钮上写的就是「补签（撤销缺考）」）。
+    if (on && patch.result === undefined && (record.result === '' || record.result === 'absent')) {
       patch.result = 'attended'
       patch.stageChangedAt = nowIso
     }
@@ -466,7 +467,8 @@ export async function bulkApplicationsAdmin(ctx: RequestContext): Promise<Respon
         const record = await getApplication(ctx.env, id)
         if (!record) continue
         const patch: { id: string } & ApplicationPatch = { id, [column]: nowIso }
-        if (record.result === '') {
+        // 与单人补签同一条规则：待定的记为已参加，已经判过「缺考」的撤销
+        if (record.result === '' || record.result === 'absent') {
           patch.result = 'attended'
           patch.stageChangedAt = nowIso
         }

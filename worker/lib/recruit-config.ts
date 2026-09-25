@@ -13,6 +13,7 @@ import {
   DEFAULT_RECRUIT_CYCLE,
   DEFAULT_RECRUIT_GROUPS,
   DEFAULT_RECRUIT_TEMPLATES,
+  isRecruitCycleState,
   RECRUIT_MAIL_KINDS,
   type RecruitCycleConfig,
   type RecruitCycleState,
@@ -28,11 +29,21 @@ export interface RecruitSettings {
   templates: RecruitTemplates
 }
 
+/**
+ * 逐字段取值，而不是 `{ ...默认值, ...stored }`：
+ *
+ * 库里可能留着旧版本写下的 JSON（以前还有报名时间窗、笔试时间、archives 这些字段）。
+ * 直接铺开会让这些**已经废弃的键**跟着响应一路传到前端，下一个人看到会以为它们还在用；
+ * 逐字段取还顺带兜住「state 是脏字符串」的情况 —— 那种值会让整个后台界面崩掉。
+ */
 function mergeCycle(stored: Partial<RecruitCycleConfig> | null | undefined): RecruitCycleConfig {
-  const merged = { ...DEFAULT_RECRUIT_CYCLE, ...(stored ?? {}) }
-  // groups 是对象：浅合并会把 undefined 带进来，所以按字段单独合并
-  merged.groups = { ...DEFAULT_RECRUIT_GROUPS, ...(stored?.groups ?? {}) }
-  return merged
+  const state = String(stored?.state ?? '')
+  return {
+    name: String(stored?.name ?? DEFAULT_RECRUIT_CYCLE.name),
+    state: isRecruitCycleState(state) ? state : DEFAULT_RECRUIT_CYCLE.state,
+    groups: { ...DEFAULT_RECRUIT_GROUPS, ...(stored?.groups ?? {}) },
+    startedAt: String(stored?.startedAt ?? ''),
+  }
 }
 
 function mergeTemplates(stored: Partial<RecruitTemplates> | null | undefined): RecruitTemplates {
