@@ -39,6 +39,7 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 import {
+  ArrowLeft,
   ArrowRight,
   Ban,
   Check,
@@ -52,6 +53,7 @@ import {
   QrCode,
   RotateCcw,
   Save,
+  Settings2,
   UserPlus,
   Users,
 } from 'lucide-react'
@@ -151,24 +153,51 @@ export function RecruitPage() {
     )
   }
 
-  // 休眠：整页只显示启动大屏（时间线、其它视图都不可见）
+  // 休眠：整页只显示启动大屏（时间线、名单都不出现），但允许先点「设置」把
+  // 本届名称与四个群号配好 —— 休眠期改了不影响任何流程，开启报名后第一封邀请函就是对的。
   if (admin.state === 'dormant') {
+    if (topView === 'settings') {
+      return (
+        <div className="mx-auto max-w-5xl">
+          <Button variant="ghost" className="mb-4 gap-1.5" onClick={() => setTopView('flow')}>
+            <ArrowLeft className="h-4 w-4" /> 返回休眠页
+          </Button>
+          <RecruitSettingsView admin={admin} />
+        </div>
+      )
+    }
+
+    // 还没配的东西直接列出来：这些变量在邮件与预览里会保持原文，不会悄悄变空白
+    const missing = [
+      ...(admin.cycle.name.trim() ? [] : ['本届名称']),
+      ...(Object.keys(RECRUIT_GROUP_LABELS) as RecruitGroupKey[])
+        .filter((key) => !admin.cycle.groups[key].trim())
+        .map((key) => RECRUIT_GROUP_LABELS[key]),
+    ]
+
     return (
       <div className="mx-auto max-w-3xl">
-        <div className="rounded-2xl border border-border bg-card px-8 py-24 text-center">
+        <div className="rounded-2xl border border-border bg-card px-8 py-20 text-center">
           <Moon className="mx-auto h-10 w-10 text-muted-foreground" />
           <h1 className="mt-6 font-display text-3xl font-bold">招新系统休眠中</h1>
           <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-muted-foreground">
             当前没有任何进行中的招新周期，官网的报名入口处于关闭状态。
             点击下方按钮启动系统，开始一个新周期。
           </p>
-          <Button
-            size="lg"
-            className="mt-10 gap-2"
-            onClick={() => void admin.runAction('start_cycle')}
-          >
-            <ArrowRight className="h-4 w-4" /> {RECRUIT_ACTION_META.start_cycle.label}
-          </Button>
+          <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
+            <Button size="lg" className="gap-2" onClick={() => void admin.runAction('start_cycle')}>
+              <ArrowRight className="h-4 w-4" /> {RECRUIT_ACTION_META.start_cycle.label}
+            </Button>
+            <Button size="lg" variant="outline" className="gap-2" onClick={() => setTopView('settings')}>
+              <Settings2 className="h-4 w-4" /> 设置本届名称与群号
+            </Button>
+          </div>
+          {missing.length > 0 && (
+            <p className="mx-auto mt-6 max-w-md text-xs leading-relaxed text-muted-foreground">
+              还没配：{missing.join('、')}。可以先点「设置」填好 —— 休眠期也能改；
+              没配置的变量会保持 {'{writtenGroup}'} 这样的原文，不会悄悄变成空白。
+            </p>
+          )}
         </div>
       </div>
     )

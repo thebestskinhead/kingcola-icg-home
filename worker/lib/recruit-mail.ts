@@ -41,20 +41,21 @@ export function buildInviteUrl(origin: string, token: string): string {
  * 模板变量。
  *
  * **没有任何时间与地点** —— 安排一律让同学看对应的 QQ 群，所以这里给的是四个群号。
- * 群号还没填时给一个显眼的占位符，而不是留一行空白：
- * 至少让人看出「这里本来应该有个群号」，而不是以为信里就是空的。
+ *
+ * 群号与本届名称**原样传出去，不做兜底**：没填就是空串，
+ * `renderTemplate` 遇到空值会保留 `{writtenGroup}` 原文（见 shared/recruit.ts），
+ * 所以「还没配群号」这件事在预览与真实信件里都看得见，而不是变成一行空白。
  */
 export function buildNoticeVars(record: ApplicationRecord, ctx: NoticeContext): Record<string, string> {
   const { cycle, studio } = ctx
-  const group = (value: string) => value.trim() || '（待公布）'
   return {
     name: record.name || '同学',
     studentId: record.studentId,
-    cycleName: cycle.name || '本次招新',
-    writtenGroup: group(cycle.groups.written),
-    interviewGroup: group(cycle.groups.interview),
-    probationGroup: group(cycle.groups.probation),
-    formalGroup: group(cycle.groups.formal),
+    cycleName: cycle.name,
+    writtenGroup: cycle.groups.written,
+    interviewGroup: cycle.groups.interview,
+    probationGroup: cycle.groups.probation,
+    formalGroup: cycle.groups.formal,
     inviteLink: record.inviteToken ? buildInviteUrl(ctx.origin, record.inviteToken) : '',
     studio: studio.studioName,
     contactEmail: studio.contactEmail,

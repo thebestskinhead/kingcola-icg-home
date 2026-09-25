@@ -75,15 +75,17 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
   const meta = RECRUIT_MAIL_META[active]
   const unknown = admin.unknownVariables[active] ?? []
 
-  /** 预览用的示例数据（群号用当前填的，没填就照实显示占位符） */
+  /**
+   * 预览数据：只有「逐人不同」的姓名、学号与邀请链接用示例值；
+   * 本届名称与四个群号一律照当前填的来 —— 没填就**保持 `{writtenGroup}` 原样**
+   * （`renderTemplate` 对未配置的招新变量不做替换），这样一眼能看出还差哪些没配。
+   * 休眠期进设置页也是同一套逻辑。
+   */
   const previewVars: Record<string, string> = {
     name: '张同学',
     studentId: '2026001',
-    cycleName: cycleName || '本次招新',
-    writtenGroup: groups.written || '（待公布）',
-    interviewGroup: groups.interview || '（待公布）',
-    probationGroup: groups.probation || '（待公布）',
-    formalGroup: groups.formal || '（待公布）',
+    cycleName,
+    ...groups,
     inviteLink: `${window.location.origin}/invite/abc123`,
     studio: site?.studioName ?? '',
     contactEmail: site?.contactEmail ?? '',
@@ -276,7 +278,8 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
             </div>
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               所有时间与地点安排都在对应的群里通知，邮件里不再出现。群号改了会立刻体现在之后发出的邀请函里；
-              还没建群可以先留空（邮件里会显示「（待公布）」）。
+              还没建群可以先留空 —— 留空的变量在邮件与预览里会保持 {'{writtenGroup}'} 这样的原文，
+              不会替换成空白，一眼就能看出还没配。休眠期也能在这里改。
             </p>
           </div>
 

@@ -1011,13 +1011,33 @@ const VARIABLE_PATTERN = /\{([a-zA-Z][a-zA-Z0-9]*)\}/g
 const KNOWN_VARIABLES = new Set(RECRUIT_MAIL_VARIABLES.map((item) => item.token.slice(1, -1)))
 
 /**
- * 变量替换。已知变量即使没有值也替换成空串（避免把 `{inviteLink}` 这种原文发出去），
- * 未知变量（多半是打错字）**原样保留**，好让后台预览时一眼看出来。
+ * 这些变量**要等招新启用并配置好才有值**：本届名称与四个 QQ 群号。
+ * 它们没值时不会被替换成空白 —— 规则见 `renderTemplate`。
+ */
+export const RECRUIT_CYCLE_VARIABLES: ReadonlySet<string> = new Set([
+  'cycleName',
+  'writtenGroup',
+  'interviewGroup',
+  'probationGroup',
+  'formalGroup',
+])
+
+/**
+ * 变量替换。三种情况刻意分开：
+ *
+ * 1. **未知变量**（多半是打错字）原样保留；
+ * 2. **还没配置的招新变量**（本届名称、四个群号）也**原样保留** ——
+ *    休眠期或刚启动还没填群号时，把它替换成空白，会让一封邀请函悄悄少掉最关键的那一行，
+ *    而预览里也看不出到底哪里没配；留着 `{writtenGroup}` 原文，一眼就知道去「设置」补；
+ * 3. 其余已知变量（工作室名称 / 联系邮箱 / 邀请链接等）没值就替换成空串 ——
+ *    它们不是「没启用招新」，而是站点本来就没填，把 `{contactEmail}` 这种原文发出去更糟。
  */
 export function renderTemplate(text: string, vars: Record<string, string>): string {
   return text.replace(VARIABLE_PATTERN, (whole, key: string) => {
     if (!KNOWN_VARIABLES.has(key)) return whole
-    return vars[key] ?? ''
+    const value = vars[key]
+    if (!value && RECRUIT_CYCLE_VARIABLES.has(key)) return whole
+    return value ?? ''
   })
 }
 

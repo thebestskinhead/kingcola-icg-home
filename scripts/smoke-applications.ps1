@@ -267,6 +267,13 @@ try {
     Check '导出 CSV 带表头与中文列名' ($csv -match '姓名' -and $csv -match '笔试签到') ($csv.Substring(0, [Math]::Min(60, $csv.Length)))
     $notify = (Api 'POST' '/api/admin/applications/notify' @{ ids = @($appIds['b']); subject = '【拾光工作室】冒烟通知 · {name}'; body = '测试正文' } $jar).data
     Check '群发自定义通知' ($notify.results.Count -eq 1) $notify.summary
+
+    # 未初始化（还没配群号）的招新变量**不做替换**：主题里的 {writtenGroup} 应原样保留在发信日志里
+    $null = Api 'PUT' '/api/admin/recruit' @{ cycle = @{ groups = @{ written = ''; interview = ''; probation = ''; formal = '' } } } $jar
+    $null = Api 'POST' '/api/admin/applications/notify' @{ ids = @($appIds['c']); subject = '【未配置测试】{writtenGroup}'; body = 'x' } $jar
+    $logsWithToken = (Api 'GET' '/api/admin/recruit/mails' $null $jar).data.logs
+    Check '未配置的招新变量保持原文（不替换成空白）' (($logsWithToken | Where-Object { $_.subject -like '*{writtenGroup}*' }).Count -ge 1) (($logsWithToken | Select-Object -First 1).subject)
+    $null = Api 'PUT' '/api/admin/recruit' @{ cycle = @{ groups = @{ written = '710000001'; interview = '710000002'; probation = '710000003'; formal = '710000004' } } } $jar
     $withdrawn = (Api 'POST' '/api/admin/applications/bulk' @{ ids = @($appIds['b']); action = 'withdraw' } $jar).data
     Check '批量标记退出报名' ($withdrawn.moved -eq 1) $withdrawn.moved
     $resent = (Api 'PUT' "/api/admin/applications/$($appIds['b'])" @{ notice = 'thanks_written' } $jar).data
