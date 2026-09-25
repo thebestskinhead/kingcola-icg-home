@@ -1,12 +1,15 @@
 /**
- * ⚠️ 临时 DEMO —— 与任何真实数据无关，确认交互后整个文件连同路由一起删除。
+ * 招新后台（当前挂在 `/admin/recruit`）。
  *
- * 这页 mock 的是「事件驱动」的招新后台信息架构：
- *   顶部时间线（当前阶段高亮，未来阶段可看但锁定）→ 阶段页 = 摘要条 + 【进行中】/【结束后】两块面板 + 数据区。
- * 每个事件都是「配置 → 进行中 → 结束（手动，顺带收尾，二次确认）→ 结束后」四段；
+ * ⚠️ 这一版**全部是假数据**，交互只改组件内的状态、不发任何请求 —— 先把信息架构定下来，
+ * 之后再逐块把真接口接进来（旧实现在 `backup/recruit-legacy/`，接线时照着搬）。
+ *
+ * 信息架构：**事件驱动**，整届没有任何时间字段。
+ *   顶部时间线（当前阶段高亮，未来阶段可看但锁定）
+ *   → 阶段页 = 摘要条 + 【进行中】/【结束后】两块面板 + 数据区。
+ * 每个事件都是「进行中 → 结束（手动，顺带收尾，二次确认）→ 结束后」；
  * 报名的结束拆成「结束报名」与「确认名单」两个动作。
- *
- * 所有交互都只改本组件内的假状态，不发任何请求。
+ * 阶段的开与关完全由管理员点按钮决定；时间地点一律通过对应的 QQ 群通知，邮件里不出现。
  */
 
 import { useMemo, useState } from 'react'
@@ -42,6 +45,7 @@ import {
   CheckCircle2,
   Clock,
   Lock,
+  Moon,
   QrCode,
   RotateCcw,
   UserPlus,
@@ -289,6 +293,8 @@ export function DemoEventDrivenPage() {
   const [confirming, setConfirming] = useState<{ title: string; body: string; run: () => void } | null>(null)
   /** 顶层视图：流程（时间线+阶段面板）或 设置 */
   const [topView, setTopView] = useState<'flow' | 'settings'>('flow')
+  /** 系统是否已启动；未启动 = 整页只显示「休眠中」大屏 */
+  const [started, setStarted] = useState(false)
 
   const currentStage = stepToStage(step)
   /** 时间线上正在看的节点；默认跟随当前阶段 */
@@ -492,7 +498,9 @@ export function DemoEventDrivenPage() {
     toast.success('本届已关闭', { description: '名单 CSV 已导出留底（页面不列往届存档），报名数据已清空。' })
   }
 
-  const resetDemo = () => {
+  /** 回到休眠：本届的一切状态都清掉（「重置」与「下载归档」都走这里） */
+  const toDormant = () => {
+    setStarted(false)
     setStep(STEP.prepare)
     setApps(INITIAL_APPS)
     setCodes(INITIAL_CODES)
@@ -500,7 +508,50 @@ export function DemoEventDrivenPage() {
     setSelection(new Set())
     setScoreDraft({})
     setViewing('auto')
-    toast.info('Demo 已重置')
+    setTopView('flow')
+  }
+
+  const resetDemo = () => {
+    toDormant()
+    toast.info('Demo 已重置，回到休眠')
+  }
+
+  /**
+   * 下载归档 CSV。这是本届的最后一个动作：文件真的下一次，下完就自动回到休眠 ——
+   * 归档即收尾，不再需要一个「本届已结束」的停留页；要再招新就重新点「启动系统」。
+   */
+  const downloadArchive = () => {
+    const header = '姓名,学号,邮箱,来源,最终状态'
+    const rows = apps.map((app) =>
+      [
+        app.name,
+        app.studentId,
+        app.email,
+        app.source === 'manual' ? '补录' : '官网',
+        app.result === 'failed' ? '未通过' : app.result === 'absent' ? '缺考' : '已转正',
+      ].join(','),
+    )
+    const csv = `\ufeff${[header, ...rows].join('\r\n')}`
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `招新名单-${new Date().toISOString().slice(0, 10)}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
+
+    toDormant()
+    toast.success('归档已下载，系统回到休眠', {
+      description: '本届数据已清空；要再招新就点「启动系统」开一个新周期。',
+    })
+  }
+
+  /** 启动系统：从休眠进入备招，开始一个新的周期 */
+  const startCycle = () => {
+    setStarted(true)
+    setStep(STEP.prepare)
+    setViewing('auto')
+    setTopView('flow')
+    toast.success('新周期已创建', { description: '先填本届名称与 QQ 群号，然后手动开启报名。' })
   }
 
   // ----- 渲染辅助 -----
@@ -991,17 +1042,36 @@ export function DemoEventDrivenPage() {
                 ))}
               </div>
             ), 'after')}
-            {panel('存档', 'CSV 已写进对象存储（页面刻意不列往届存档）', (
-              <Button size="sm" variant="outline" onClick={() => toast.success('已下载（Demo）')}>
+            {panel('存档', '下载即收尾：文件下完自动回到休眠，本届也就结束了（页面刻意不列往届存档）', (
+              <Button size="sm" variant="outline" onClick={downloadArchive}>
                 下载本届名单 CSV
               </Button>
             ), 'after')}
             <Button variant="outline" className="gap-1.5" onClick={resetDemo}>
-              <RotateCcw className="h-4 w-4" /> 重置 Demo 从头走一遍
+              <RotateCcw className="h-4 w-4" /> 重置演示，回到休眠
             </Button>
           </div>
         )
     }
+  }
+
+  // 未启动系统：整页只显示「休眠中」大屏 —— 时间线、设置、阶段面板都不可见
+  if (!started) {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <div className="rounded-2xl border border-border bg-card px-8 py-24 text-center">
+          <Moon className="mx-auto h-10 w-10 text-muted-foreground" />
+          <h1 className="mt-6 font-display text-3xl font-bold">招新系统休眠中</h1>
+          <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-muted-foreground">
+            当前没有任何进行中的招新周期，官网的报名入口处于关闭状态。
+            点击下方按钮启动系统，开始一个新周期。
+          </p>
+          <Button size="lg" className="mt-10 gap-2" onClick={startCycle}>
+            <ArrowRight className="h-4 w-4" /> 启动系统，开始新的周期
+          </Button>
+        </div>
+      </div>
+    )
   }
 
   return (

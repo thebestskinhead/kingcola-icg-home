@@ -74,7 +74,8 @@ export function AdminLayout({
           <NavItem to="/admin" icon={<LayoutDashboard className="h-4 w-4" />} label="概览" />
 
           <div className="mt-3 px-3 pb-1 text-[11px] tracking-[0.2em] text-muted-foreground">招新</div>
-          {/* 整个招新模块一个入口，内部分「看板 / 周期 / 报名 / 成绩 / 自动流程 / 模板 / 日志」页签 */}
+          {/* 整个招新模块一个入口：休眠 → 启动 → 备招 → 报名 → 笔试 → 面试 → 答辩 → 转正 → 归档，
+              阶段推进全靠按钮，内部分「流程 / 名单 / 邮件日志 / 设置」视图 */}
           <NavItem to="/admin/recruit" icon={<ClipboardList className="h-4 w-4" />} label="招新" />
 
           <div className="mt-3 px-3 pb-1 text-[11px] tracking-[0.2em] text-muted-foreground">内容管理</div>

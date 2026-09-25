@@ -8,13 +8,7 @@ import { Dashboard } from './Dashboard'
 import { ContentPage } from './ContentPage'
 import { AuditPage } from './AuditPage'
 import { SettingsPage } from './SettingsPage'
-import { BoardPage } from './recruit/BoardPage'
-import { CyclePage } from './recruit/CyclePage'
-import { ApplicationsPage } from './recruit/ApplicationsPage'
-import { StagePage } from './recruit/StagePage'
 import { DemoEventDrivenPage } from './recruit/DemoEventDrivenPage'
-import { TemplatesPage } from './recruit/TemplatesPage'
-import { MailsPage } from './recruit/MailsPage'
 import { StoragePage } from './StoragePage'
 
 export function AdminApp() {
@@ -62,22 +56,10 @@ export function AdminApp() {
       <AdminLayout identity={identity} onLogout={logout}>
         <Routes>
           <Route index element={<Dashboard />} />
-          {/* 招新模块：一个侧栏入口 + 内部页签。
-              主体按**阶段**组织（准备 → 报名 → 笔试 → 面试 → 答辩 → 转正），
-              每个阶段页 = 操作区 + 数据区；看板 / 名单 / 模板 / 日志是跨阶段的全局页。
-              成绩录入与自动流程不再单独开页，已并入对应阶段页。 */}
-          <Route path="recruit" element={<BoardPage />} />
-          <Route path="recruit/prepare" element={<CyclePage />} />
-          <Route path="recruit/apply" element={<StagePage stage="apply" />} />
-          <Route path="recruit/written" element={<StagePage stage="written" />} />
-          <Route path="recruit/interview" element={<StagePage stage="interview" />} />
-          <Route path="recruit/defense" element={<StagePage stage="defense" />} />
-          <Route path="recruit/onboard" element={<StagePage stage="onboard" />} />
-          <Route path="recruit/roster" element={<ApplicationsPage />} />
-          {/* ⚠️ 临时 DEMO（事件驱动信息架构，假数据）：确认后删除本行与 DemoEventDrivenPage.tsx */}
-          <Route path="recruit/demo" element={<DemoEventDrivenPage />} />
-          <Route path="recruit/templates" element={<TemplatesPage />} />
-          <Route path="recruit/mails" element={<MailsPage />} />
+          {/* 招新模块：一页到底（休眠 → 启动 → 备招 → 报名 → 笔试 → 面试 → 答辩 → 转正 → 归档）。
+              阶段的开与关全部由管理员点击推进，页面不出现任何时间字段。
+              旧版按阶段拆开的页面已归档到 backup/recruit-legacy/，功能逐块并进来后再删备份。 */}
+          <Route path="recruit" element={<DemoEventDrivenPage />} />
           <Route path="content/:resource" element={<ContentPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="storage" element={<StoragePage />} />
