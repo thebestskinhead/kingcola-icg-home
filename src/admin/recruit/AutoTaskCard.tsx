@@ -10,6 +10,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Table,
   TableBody,
@@ -65,6 +66,8 @@ export function AutoTaskCard({
   const [running, setRunning] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [lastRun, setLastRun] = useState<RunRecruitAutoResult | null>(null)
+  /** 「按分数线批量勾选」的阈值；留空表示不用这个功能 */
+  const [threshold, setThreshold] = useState('')
 
   const load = useCallback(
     async (ids: string[]) => {
@@ -120,6 +123,26 @@ export function AutoTaskCard({
 
   const blocked = preview?.blocked ?? ''
   const total = preview?.summary.total ?? 0
+
+  /** 会真正被处理的人 = 会发信的那些；「本次跳过」的（没录成绩）不参与勾选 */
+  const actionable = (preview?.items ?? []).filter((item) => item.mail !== null)
+  const hasScores = actionable.some((item) => /\d/.test(item.score))
+
+  /** 按分数线批量勾选：成绩 ≥ 阈值的都勾上（成绩字符串里抓第一段数字比较） */
+  const selectByThreshold = () => {
+    const value = Number(threshold.match(/-?\d+(\.\d+)?/)?.[0] ?? NaN)
+    if (!Number.isFinite(value)) return toast.error('请先填分数线，如 60')
+    const picked = actionable.filter((item) => {
+      const score = Number(item.score.match(/-?\d+(\.\d+)?/)?.[0] ?? NaN)
+      return Number.isFinite(score) && score >= value
+    })
+    if (picked.length === 0) return toast.info(`没有成绩不低于 ${value} 的同学`)
+    setSelected(new Set(picked.map((item) => item.applicationId)))
+    toast.success(`已勾选 ${picked.length} 人`, { description: `成绩不低于 ${value} 分的同学` })
+  }
+
+  const selectAll = () => setSelected(new Set(actionable.map((item) => item.applicationId)))
+  const clearSelection = () => setSelected(new Set())
 
   return (
     <>
@@ -195,9 +218,34 @@ export function AutoTaskCard({
         </div>
 
         {needsSelection && total > 0 && (
-          <div className="border-t border-border px-5 py-3 text-[11px] leading-relaxed text-muted-foreground">
-            勾选 = 通过；<strong className="text-foreground">未勾选的同学会被判为未通过并立即收到感谢信</strong>
-            ，所以请核对完名单再执行。已勾选 {selected.size} 人。
+          <div className="border-t border-border px-5 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {hasScores && (
+                <>
+                  <Input
+                    className="h-8 w-24"
+                    value={threshold}
+                    inputMode="decimal"
+                    placeholder="分数线"
+                    onChange={(e) => setThreshold(e.target.value)}
+                  />
+                  <Button size="sm" variant="outline" onClick={selectByThreshold}>
+                    勾选不低于该分数的同学
+                  </Button>
+                </>
+              )}
+              <Button size="sm" variant="ghost" onClick={selectAll}>
+                全选
+              </Button>
+              <Button size="sm" variant="ghost" onClick={clearSelection}>
+                清空
+              </Button>
+              <span className="text-[11px] text-muted-foreground">已勾选 {selected.size} 人</span>
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              勾选 = 通过；<strong className="text-foreground">未勾选的同学会被判为未通过并立即收到感谢信</strong>
+              ，所以请核对完名单再执行。
+            </p>
           </div>
         )}
 

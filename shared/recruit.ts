@@ -560,10 +560,8 @@ export interface RecruitCycleConfig {
   /** 允许自动关闭（到转正截止或全部确认完毕） */
   autoClose: boolean
 
-  /** 笔试晋级规则：'top' 取前 N 名 / 'score' 取分数不低于 X */
-  advanceRule: 'top' | 'score'
-  advanceTop: number
-  advanceScore: number
+  // 刻意没有「晋级规则」（前 N 名 / 分数线）这类配置：面试名单由管理员人工确认，
+  // 后台提供「勾选成绩不低于 X 分的同学」做批量预选 —— 规则不该藏在配置里替人做决定。
 
   /** 手动关闭 / 重新开启的标记；手动关闭写入，重新开启清空 */
   forceClosed: boolean
@@ -590,9 +588,6 @@ export const DEFAULT_RECRUIT_CYCLE: RecruitCycleConfig = {
   absentGraceHours: 24,
   autoAbsent: true,
   autoClose: true,
-  advanceRule: 'top',
-  advanceTop: 20,
-  advanceScore: 60,
   forceClosed: false,
   closedAt: '',
   archives: [],
@@ -959,8 +954,9 @@ export const RECRUIT_AUTO_META: Record<RecruitAutoTask, RecruitAutoMeta> = {
   },
   advance_written: {
     label: '生成面试名单',
-    description: '按分数规则算出晋级名单：通过者进入面试并收到面试邀请函，其余同学收到感谢信。',
-    needsSelection: false,
+    description:
+      '勾选进入面试的同学（可按分数线批量预选）：晋级者收到面试邀请函，其余同学收到感谢信。',
+    needsSelection: true,
   },
   advance_interview: {
     label: '确认面试录取',
@@ -985,6 +981,8 @@ export interface RecruitAutoItem {
   name: string
   studentId: string
   email: string
+  /** 该同学在当前环节的成绩（原始字符串，可能没录）；前台据此做「按分数线批量勾选」 */
+  score: string
   /** 执行后会变成的 stage / result */
   targetStage: RecruitStage
   targetResult: RecruitResult

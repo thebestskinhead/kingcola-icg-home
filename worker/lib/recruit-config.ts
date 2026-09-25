@@ -32,9 +32,6 @@ function mergeCycle(stored: Partial<RecruitCycleConfig> | null | undefined): Rec
   // archives 是数组：缺省时用默认空数组，存在时原样保留（浅合并会把 undefined 带进来）
   merged.archives = Array.isArray(merged.archives) ? merged.archives : []
   merged.absentGraceHours = Number(merged.absentGraceHours) || 0
-  merged.advanceTop = Math.max(0, Number(merged.advanceTop) || 0)
-  merged.advanceScore = Number(merged.advanceScore) || 0
-  merged.advanceRule = merged.advanceRule === 'score' ? 'score' : 'top'
   return merged
 }
 

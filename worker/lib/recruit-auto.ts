@@ -3,7 +3,7 @@
  *
  * 五个任务（见 shared/recruit.ts 的 RECRUIT_AUTO_META）：
  *   mark_absent        笔试结束过了宽限期仍未签到 → 标记「未参加」，流程结束
- *   advance_written    按成绩规则分流：晋级者进面试并发面试邀请，其余发感谢信
+ *   advance_written    人工勾选晋级名单（可按分数线批量预选）：晋级者进面试并发面试邀请，其余发感谢信
  *   advance_interview  人工勾选录取 → 进预备期并发面试通过通知，其余发感谢信
  *   advance_defense    人工勾选通过 → 转正签发邀请函，其余发感谢信
  *   close_cycle        导出名单存档 → 清空报名数据 → 周期置为已结束
@@ -39,7 +39,7 @@ import {
   type ApplicationPatch,
   type ApplicationRecord,
 } from './applications'
-import { getRecruitSettings, saveRecruitSettings, type RecruitSettings } from './recruit-config'
+import { getRecruitSettings, saveRecruitSettings } from './recruit-config'
 import {
   sendApplicationNotice,
   summarizeMailResults,
@@ -116,11 +116,21 @@ function makeItem(
     name: record.name,
     studentId: record.studentId,
     email: record.email,
+    // 当前环节的成绩（原始字符串，没录就是空串）—— 前台的「按分数线批量勾选」靠它
+    score: scoreOf(record),
     targetStage,
     targetResult,
     mail,
     reason,
   }
+}
+
+/** 这条记录在它当前环节的成绩；apply 阶段还没有成绩，返回空串 */
+function scoreOf(record: ApplicationRecord): string {
+  if (record.stage === 'written') return record.writtenScore
+  if (record.stage === 'interview') return record.interviewScore
+  if (record.stage === 'defense') return record.defenseScore
+  return ''
 }
 
 function draftPreview(task: RecruitAutoTask, draft: PreviewDraft): RecruitAutoPreview {
@@ -191,19 +201,16 @@ export async function buildAutoPreview(
         return draftPreview(task, { items: [], blocked: '笔试环节没有待分流的同学。' })
       }
       const scored = candidates.filter((r) => parseScore(r.writtenScore) !== null)
-      const passed = computeWrittenPassed(scored, settings)
-      const items: RecruitAutoItem[] = scored.map((r) =>
-        passed.has(r.id)
-          ? makeItem(
-              r,
-              'interview',
-              '',
-              'interview_invite',
-              `成绩 ${r.writtenScore}，进入面试名单`,
-            )
-          : makeItem(r, 'written', 'failed', 'thanks_written', `成绩 ${r.writtenScore}，未进入面试`),
-      )
       const missing = candidates.filter((r) => parseScore(r.writtenScore) === null)
+
+      // 面试名单由管理员**人工确认**（支持按分数线批量预选 + 单人勾选）。
+      // 与录取 / 答辩一致：没勾就执行会被拦下 —— 晋级是决定别人命运的动作，不该有默认值。
+      const selected = new Set(options.selectedIds ?? [])
+      const items: RecruitAutoItem[] = scored.map((r) =>
+        selected.has(r.id)
+          ? makeItem(r, 'interview', '', 'interview_invite', `已勾选晋级（成绩 ${r.writtenScore}），进入面试名单`)
+          : makeItem(r, 'written', 'failed', 'thanks_written', `成绩 ${r.writtenScore}，未进入面试名单`),
+      )
       for (const r of missing) {
         items.push(makeItem(r, r.stage, r.result, null, '尚未录入成绩，本次跳过（补齐后再执行）'))
       }
@@ -211,10 +218,12 @@ export async function buildAutoPreview(
         items,
         blocked:
           scored.length === 0
-            ? '还没有人录入笔试成绩，先去「成绩录入」页填分。'
-            : missing.length > 0
-              ? `有 ${missing.length} 位同学没录成绩，他们本次不会被处理。`
-              : '',
+            ? '还没有人录入笔试成绩，先到笔试阶段页填分。'
+            : selected.size === 0
+              ? '还没有勾选晋级名单：可按分数线批量勾选，或逐个勾选。未勾选的同学会被视为未通过并收到感谢信。'
+              : missing.length > 0
+                ? `有 ${missing.length} 位同学没录成绩，他们本次不会被处理。`
+                : '',
       })
     }
 
@@ -293,25 +302,6 @@ export async function buildAutoPreview(
       })
     }
   }
-}
-
-/** 按规则算出笔试晋级名单 */
-function computeWrittenPassed(
-  scored: ApplicationRecord[],
-  settings: RecruitSettings,
-): Set<string> {
-  const { advanceRule, advanceTop, advanceScore } = settings.cycle
-  if (advanceRule === 'score') {
-    return new Set(
-      scored
-        .filter((r) => (parseScore(r.writtenScore) ?? -Infinity) >= advanceScore)
-        .map((r) => r.id),
-    )
-  }
-  const sorted = [...scored].sort(
-    (a, b) => (parseScore(b.writtenScore) ?? -Infinity) - (parseScore(a.writtenScore) ?? -Infinity),
-  )
-  return new Set(sorted.slice(0, Math.max(0, advanceTop)).map((r) => r.id))
 }
 
 // ============================================================================

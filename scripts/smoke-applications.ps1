@@ -6,7 +6,7 @@
 #   2) 学生提交报名表（multipart + 文件头校验 + 落对象存储 + 落库 + 重命名为「姓名+学号+报名表」）
 #   3) 报名表私有性：匿名与学生本人都拿不到，只有管理员能下载
 #   4) 扫码签到：先建场次 → 签发二维码 → 凭 token 签到，签到后状态变「已参加」并记下签的哪一场
-#   5) 自动流程（预览 → 执行）：缺考标记、按成绩生成面试名单、
+#   5) 自动流程（预览 → 执行）：缺考标记、人工勾选生成面试名单、
 #      面试录取、答辩通过 → 每一步都验证状态与发信日志
 #   6) 邀请函确认 → 写入成员表
 #   7) 名单导出、看板统计、关闭本届（导出存档 → 清空数据 → 归档）
@@ -109,7 +109,7 @@ try {
         name = '冒烟测试招新'
         applyStart = (Cn 120); applyEnd = (Cn 180)
         writtenAt = (Cn 240); writtenEnd = (Cn 300)
-        absentGraceHours = 0; advanceRule = 'top'; advanceTop = 1
+        absentGraceHours = 0
         interviewAt = (Cn 360); defenseStart = (Cn 480); defenseEnd = (Cn 3000); onboardDeadline = (Cn 4000)
         forceClosed = $false; closedAt = ''
     } } $jar
@@ -221,22 +221,25 @@ try {
     $cDetail = (Api 'GET' "/api/admin/applications/$($appIds['c'])" $null $jar).data.application
     Check '丙的结果为 absent' ($cDetail.result -eq 'absent') $cDetail.result
 
-    # ===== 6. 录入成绩并生成面试名单 =====
+    # ===== 6. 录入成绩并生成面试名单（人工勾选 + 分数线批量预选） =====
     Write-Host "`n6) 成绩 → 面试名单"
     foreach ($key in @('a', 'b')) {
         $s = $students | Where-Object { $_.key -eq $key }
         $null = Api 'PUT' "/api/admin/applications/$($appIds[$key])" @{ writtenScore = $s.score } $jar
     }
     $preview = (Api 'GET' '/api/admin/recruit/auto?task=advance_written' $null $jar).data
-    $passItem = $preview.items | Where-Object { $_.applicationId -eq $appIds['a'] }
-    $failItem = $preview.items | Where-Object { $_.applicationId -eq $appIds['b'] }
-    Check '按前 1 名：甲进入面试并发面试邀请' ($passItem.targetStage -eq 'interview' -and $passItem.mail -eq 'interview_invite') ($preview | ConvertTo-Json -Compress)
-    Check '未晋级的乙发感谢信' ($failItem.targetResult -eq 'failed' -and $failItem.mail -eq 'thanks_written')
+    Check '预览带上当前环节成绩（供前台按分数线批量勾选）' (
+        ($preview.items | Where-Object { $_.applicationId -eq $appIds['a'] }).score -eq '90'
+    ) ($preview | ConvertTo-Json -Compress)
+    Check '没勾就执行会被拦下（blocked）' ($preview.blocked -ne '') $preview.blocked
 
-    $run = Api 'POST' '/api/admin/recruit/auto' @{ task = 'advance_written' } $jar
+    # 只勾甲（乙 40 分不勾）→ 乙会被判未通过并收到感谢信
+    $run = Api 'POST' '/api/admin/recruit/auto' @{ task = 'advance_written'; selectedIds = @($appIds['a']) } $jar
     Check '执行成功且报告发信结果' ($run.ok -eq $true -and $run.data.moved -eq 2) ($run.data.mail | ConvertTo-Json -Compress)
     $aNow = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
     Check '甲进入面试阶段' ($aNow.stage -eq 'interview' -and $aNow.result -eq '') "$($aNow.stage)/$($aNow.result)"
+    $bNow = (Api 'GET' "/api/admin/applications/$($appIds['b'])" $null $jar).data.application
+    Check '乙停在笔试且 result=failed' ($bNow.stage -eq 'written' -and $bNow.result -eq 'failed') "$($bNow.stage)/$($bNow.result)"
 
     # ===== 7. 面试录取 → 预备期 =====
     Write-Host "`n7) 面试录取"
