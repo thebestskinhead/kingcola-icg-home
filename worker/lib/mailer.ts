@@ -13,7 +13,7 @@
 
 import { isMailReady, type SmtpConfig } from '../../shared/mail'
 import type { Env } from '../env'
-import { randomHex } from './crypto'
+import { decryptSecret, encryptSecret, isEncryptedSecret, randomHex } from './crypto'
 import { deliverMail, SmtpError } from './smtp'
 
 /** 收件人：`a@b.com` 或 `名字 <a@b.com>` 都接受，也允许传数组 */
@@ -62,11 +62,57 @@ export function normalizeRecipients(value: MailRecipient | undefined): string[] 
     .filter((item) => item.includes('@'))
 }
 
-/** 配置 + 服务端密码都齐了才算能发（填了用户名就必须有 `SMTP_PASSWORD`） */
+/** 加密凭据用的密钥：与管理员会话同源，不额外新增环境变量（换了它需要到后台重填密码） */
+function mailSecretKey(env: Env): string {
+  return env.SESSION_SECRET ?? 'kingcola-dev-insecure-session-secret-change-me'
+}
+
+/**
+ * 取当前生效的 SMTP 密码：**数据库里保存的优先**，环境变量 `SMTP_PASSWORD` 只作兜底。
+ * 传进来的 `config.password` 应当已经由 `resolveMailPassword()` 还原成明文。
+ */
+export function mailPasswordOf(env: Env, config?: SmtpConfig | null): string {
+  return (config?.password ?? '').trim() || (env.SMTP_PASSWORD ?? '').trim()
+}
+
+/** 密码来自哪里，用于后台提示（数据库 / 环境变量 / 都没有） */
+export function mailPasswordSourceOf(
+  env: Env,
+  config?: SmtpConfig | null,
+): 'database' | 'env' | 'none' {
+  if ((config?.password ?? '').trim()) return 'database'
+  if ((env.SMTP_PASSWORD ?? '').trim()) return 'env'
+  return 'none'
+}
+
+/** 配置 + 密码都齐了才算能发（填了用户名就必须有密码） */
 export function isMailConfigured(env: Env, config?: SmtpConfig | null): boolean {
   if (!isMailReady(config) || !config) return false
-  if (config.username.trim() && !(env.SMTP_PASSWORD ?? '').trim()) return false
-  return true
+  if (!config.username.trim()) return true // 服务器不要求认证（本地调试、内网中继）
+  return Boolean(mailPasswordOf(env, config))
+}
+
+/**
+ * 还原 D1 里存的 SMTP 密码（`enc$…` 密文 → 明文）。
+ *
+ * 空值、解密失败都返回空串，让调用方自然回退到环境变量；
+ * 解密失败多半是 `SESSION_SECRET` 换过了，日志里留一句便于排查。
+ */
+export async function resolveMailPassword(env: Env, stored?: string): Promise<string> {
+  const value = (stored ?? '').trim()
+  if (!value) return ''
+  if (!isEncryptedSecret(value)) return value // 兼容历史直接手填的明文
+  const plain = await decryptSecret(value, mailSecretKey(env))
+  if (plain === null) {
+    console.warn('[mailer] SMTP 密码解密失败（SESSION_SECRET 是否更换过？），已回退到 SMTP_PASSWORD')
+    return ''
+  }
+  return plain
+}
+
+/** 后台保存密码时调用：落库前加密 */
+export function encryptMailPassword(env: Env, plain: string): Promise<string> {
+  return encryptSecret(plain, mailSecretKey(env))
 }
 
 function domainOf(address: string): string {
@@ -210,7 +256,7 @@ export async function sendMail(env: Env, config: SmtpConfig, message: MailMessag
     return {
       ok: false,
       code: 'NOT_CONFIGURED',
-      message: '邮件配置不完整：请检查 SMTP 服务器地址、发件邮箱与 SMTP_PASSWORD',
+      message: '邮件配置不完整：请检查 SMTP 服务器地址、发件邮箱与登录密码',
     }
   }
 
@@ -236,8 +282,8 @@ export async function sendMail(env: Env, config: SmtpConfig, message: MailMessag
         port: config.port,
         security: config.security,
         username: config.username,
-        // 密码只在这里从服务端环境变量取出，不进日志、不进返回值
-        password: env.SMTP_PASSWORD,
+        // 密码在这里才取出（数据库优先、环境变量兜底），不进日志、不进返回值
+        password: mailPasswordOf(env, config),
         clientName: domainOf(from),
       },
       { from, to: recipients, data: raw },

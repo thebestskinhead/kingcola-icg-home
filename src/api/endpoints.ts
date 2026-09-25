@@ -191,8 +191,8 @@ export function adminAudit(limit = 100) {
 export interface AdminConfigResponse {
   site: SiteConfig
   runtime: RuntimeConfig
-  /** 服务端是否已配置 SMTP_PASSWORD（密码本身不下发，只告知有没有） */
-  mailSecretConfigured: boolean
+  /** SMTP 密码来自哪里（密码本身永不下发，只告知有没有、在哪） */
+  mailPasswordSource: 'database' | 'env' | 'none'
 }
 
 export function adminGetConfig() {
@@ -200,10 +200,12 @@ export function adminGetConfig() {
 }
 
 export function adminUpdateConfig(patch: { site?: Partial<SiteConfig>; runtime?: Partial<RuntimeConfig> }) {
-  return apiRequest<{ site: SiteConfig | null; runtime: RuntimeConfig | null }>(
-    '/api/admin/config',
-    jsonInit('PUT', patch),
-  )
+  return apiRequest<{
+    site: SiteConfig | null
+    runtime: RuntimeConfig | null
+    /** 保存后 SMTP 密码的来源（数据库 / 环境变量 / 未设置） */
+    mailPasswordSource?: 'database' | 'env' | 'none'
+  }>('/api/admin/config', jsonInit('PUT', patch))
 }
 
 // ===== 招新（公开：报名页与签到页用） =====

@@ -133,3 +133,69 @@ export async function verifyToken<T extends CompactTokenPayload>(token: string, 
     return null
   }
 }
+
+// ===== 可还原的凭据（SMTP 密码等）：落库前加密 =====
+
+/** 密文前缀：既能一眼看出「这不是明文」，也给将来换算法留了扩展位 */
+const SECRET_PREFIX = 'enc$'
+
+export function isEncryptedSecret(value: string): boolean {
+  return value.startsWith(SECRET_PREFIX)
+}
+
+async function encryptionKey(secret: string): Promise<CryptoKey> {
+  const base = await crypto.subtle.importKey('raw', encoder.encode(secret), 'HKDF', false, ['deriveKey'])
+  return crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new Uint8Array(0),
+      info: encoder.encode('kingcola.secret'),
+    },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  )
+}
+
+/**
+ * 加密一段必须能还原的凭据（如 SMTP 密码），格式 `enc$<iv>.<密文>`（base64url）。
+ * 密钥由服务端 secret 派生、不落库 —— 所以数据库被读走也拿不到明文。
+ */
+export async function encryptSecret(plain: string, secret: string): Promise<string> {
+  const iv = new Uint8Array(12)
+  crypto.getRandomValues(iv)
+  const key = await encryptionKey(secret)
+  const cipher = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv as unknown as BufferSource },
+    key,
+    encoder.encode(plain),
+  )
+  return `${SECRET_PREFIX}${bytesToBase64Url(iv)}.${bytesToBase64Url(new Uint8Array(cipher))}`
+}
+
+/**
+ * 解密凭据。**解密失败返回 `null`**（换了 secret、数据被改动），
+ * 由调用方决定回退策略 —— 绝不抛异常，免得一个坏配置把整个接口带崩。
+ * 传入的本来就不是密文时原样返回，兼容历史上直接手填的明文值。
+ */
+export async function decryptSecret(stored: string, secret: string): Promise<string | null> {
+  if (!isEncryptedSecret(stored)) return stored
+  const body = stored.slice(SECRET_PREFIX.length)
+  const separator = body.indexOf('.')
+  if (separator <= 0) return null
+  try {
+    const iv = base64UrlToBytes(body.slice(0, separator))
+    const data = base64UrlToBytes(body.slice(separator + 1))
+    const key = await encryptionKey(secret)
+    const plain = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv as unknown as BufferSource },
+      key,
+      data as unknown as BufferSource,
+    )
+    return new TextDecoder().decode(plain)
+  } catch {
+    return null
+  }
+}

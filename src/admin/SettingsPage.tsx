@@ -22,6 +22,13 @@ import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeftRight, Eye, KeyRound, Mail, Save, Send } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+/** 密码来源决定后台该提示什么 */
+const MAIL_PASSWORD_HINT: Record<'database' | 'env' | 'none', string> = {
+  database: '密码已保存在数据库中（加密存储，任何接口都不会回显）',
+  env: '当前用的是服务端环境变量 SMTP_PASSWORD；在上面填写即可改为保存在数据库',
+  none: '尚未设置密码 —— 需要认证的服务器会发送失败',
+}
+
 /** 带标签 + 提示的输入项 */
 function Field({
   label,
@@ -48,7 +55,9 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
   const [savingSite, setSavingSite] = useState(false)
   const [savingRuntime, setSavingRuntime] = useState(false)
 
-  const [mailSecretConfigured, setMailSecretConfigured] = useState(false)
+  const [mailPasswordSource, setMailPasswordSource] = useState<'database' | 'env' | 'none'>('none')
+  const [mailPassword, setMailPassword] = useState('')
+  const [clearMailPassword, setClearMailPassword] = useState(false)
   const [testTo, setTestTo] = useState('')
   const [sendingTest, setSendingTest] = useState(false)
 
@@ -64,7 +73,7 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
         if (!active) return
         setSite(response.site)
         setRuntime(response.runtime)
-        setMailSecretConfigured(response.mailSecretConfigured)
+        setMailPasswordSource(response.mailPasswordSource)
       })
       .catch((error) => toast.error(error instanceof ApiError ? error.message : '加载配置失败'))
       .finally(() => active && setLoading(false))
@@ -103,6 +112,40 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
       const response = await adminUpdateConfig({ runtime })
       if (response.runtime) setRuntime(response.runtime)
       toast.success(title, { description })
+      refreshRuntimeConfig()
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : '保存失败')
+    } finally {
+      setSavingRuntime(false)
+    }
+  }
+
+  /**
+   * 邮件配置保存：密码要区分「不改 / 改 / 清除」三种意图 ——
+   * 后台永远拿不到原值，所以不带 password 键就是不修改。
+   */
+  const saveMail = async () => {
+    const nextMail: SmtpConfig = { ...mail }
+    // 后台永远拿不到原值：不带 password 键 = 不修改；空串 = 清除；有值 = 更新
+    delete nextMail.password
+    if (clearMailPassword) nextMail.password = ''
+    else if (mailPassword.trim()) nextMail.password = mailPassword.trim()
+
+    setSavingRuntime(true)
+    try {
+      const response = await adminUpdateConfig({ runtime: { mail: nextMail } })
+      if (response.runtime) setRuntime(response.runtime)
+      if (response.mailPasswordSource) setMailPasswordSource(response.mailPasswordSource)
+      const changedPassword = Boolean(mailPassword.trim())
+      setMailPassword('')
+      setClearMailPassword(false)
+      toast.success('邮件配置已保存', {
+        description: clearMailPassword
+          ? '已清除数据库中的密码'
+          : changedPassword
+            ? '密码已加密保存到数据库'
+            : '密码未改动',
+      })
       refreshRuntimeConfig()
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : '保存失败')
@@ -182,7 +225,7 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
         <TabsList className="flex h-auto flex-wrap justify-start gap-1">
           <TabsTrigger value="brand">品牌与联系方式</TabsTrigger>
           <TabsTrigger value="about">首页简介</TabsTrigger>
-          <TabsTrigger value="recruit">招新与加入我们</TabsTrigger>
+          {/* 「招新与加入我们」已迁到「招新 → 设置」，与邮件模板放在一起 */}
           <TabsTrigger value="footer">页脚</TabsTrigger>
           <TabsTrigger value="channel">流量通道</TabsTrigger>
           <TabsTrigger value="mail">邮件通知</TabsTrigger>
@@ -276,71 +319,7 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
           <SaveBar>统计数字本身由成员 / 项目 / 新闻数量自动计算，这里只改标签文字</SaveBar>
         </TabsContent>
 
-        {/* ===== 招新与加入我们 ===== */}
-        <TabsContent value="recruit" className="mt-5 rounded-2xl border border-border bg-card p-5 sm:p-6">
-          <div className="grid gap-5">
-            {/* 招新总开关已移除：报名入口与首页横幅由招新周期自动派生（见后台「招新 → 准备」） */}
-            <Field label="首页招新横幅标题">
-              <Input value={site.recruitTitle} onChange={(e) => patch({ recruitTitle: e.target.value })} />
-            </Field>
-
-            <Field label="首页招新横幅描述">
-              <Textarea value={site.recruitDesc} rows={3} onChange={(e) => patch({ recruitDesc: e.target.value })} />
-            </Field>
-
-            <div className="border-t border-border pt-5">
-              <Field label="「加入我们」页面标题">
-                <Input value={site.joinTitle} onChange={(e) => patch({ joinTitle: e.target.value })} />
-              </Field>
-            </div>
-
-            <Field label="「加入我们」页面描述">
-              <Textarea value={site.joinIntro} rows={3} onChange={(e) => patch({ joinIntro: e.target.value })} />
-            </Field>
-
-            <Field
-              label="招新流程"
-              hint={`每行一条，格式「标题 | 描述」，当前 ${preview.steps.length} 条`}
-            >
-              <Textarea
-                value={site.joinSteps}
-                rows={6}
-                onChange={(e) => patch({ joinSteps: e.target.value })}
-                placeholder="扫码完成身份认证 | 使用微信扫描二维码…"
-              />
-            </Field>
-
-            <div className="grid gap-1.5">
-              <Label>流程预览</Label>
-              <div className="rounded-xl border border-border bg-secondary/30 p-4">
-                {preview.steps.map((step) => (
-                  <div key={step.no} className="grid grid-cols-[2.5rem_1fr] gap-3 border-b border-border py-2.5 last:border-b-0">
-                    <span className="font-display text-accent">{step.no}</span>
-                    <div>
-                      <div className="text-sm font-medium">{step.title || '（缺少标题）'}</div>
-                      <div className="text-xs text-muted-foreground">{step.desc || '（无描述）'}</div>
-                    </div>
-                  </div>
-                ))}
-                {preview.steps.length === 0 && (
-                  <p className="text-xs text-muted-foreground">还没有填写流程</p>
-                )}
-              </div>
-            </div>
-
-            <Field
-              label="对报名者的期望"
-              hint={`每行一条，当前 ${preview.requirements.length} 条；留空则不显示该区块`}
-            >
-              <Textarea
-                value={site.joinRequirements}
-                rows={5}
-                onChange={(e) => patch({ joinRequirements: e.target.value })}
-              />
-            </Field>
-          </div>
-          <SaveBar>这里的内容同时驱动首页招新横幅与「加入我们」页面</SaveBar>
-        </TabsContent>
+        {/* 「招新与加入我们」已迁到「招新 → 设置」（RecruitSettingsPage），与邮件模板放在一起 */}
 
         {/* ===== 页脚 ===== */}
         <TabsContent value="footer" className="mt-5 rounded-2xl border border-border bg-card p-5 sm:p-6">
@@ -441,9 +420,8 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
             <Mail className="h-4 w-4 text-accent" /> 邮件通知
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            报名通知等邮件通过 SMTP 发出。密码属于敏感配置，存放在服务端环境变量{' '}
-            <code className="rounded bg-secondary px-1">SMTP_PASSWORD</code>，不在后台填写（
-            {mailSecretConfigured ? '当前已配置' : '当前未配置'}）。
+            报名通知等邮件通过 SMTP 发出。密码保存在数据库里（加密存储，任何接口都不会回显），
+            也可以用服务端环境变量 <code className="rounded bg-secondary px-1">SMTP_PASSWORD</code> 兜底。
           </p>
 
           <div className="mt-5 grid gap-4">
@@ -470,6 +448,54 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
                   placeholder="选填"
                 />
               </Field>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label>SMTP 密码 / 授权码</Label>
+              <Input
+                type="password"
+                autoComplete="new-password"
+                value={mailPassword}
+                onChange={(e) => {
+                  setMailPassword(e.target.value)
+                  setClearMailPassword(false)
+                }}
+                disabled={clearMailPassword}
+                placeholder={mailPasswordSource === 'none' ? '尚未设置' : '已保存 —— 留空表示不修改'}
+              />
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+                <span
+                  className={cn(
+                    clearMailPassword || mailPasswordSource === 'none'
+                      ? 'text-amber-600'
+                      : 'text-muted-foreground',
+                  )}
+                >
+                  {clearMailPassword ? '保存后将清除数据库中的密码' : MAIL_PASSWORD_HINT[mailPasswordSource]}
+                </span>
+                {clearMailPassword ? (
+                  <button
+                    type="button"
+                    className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                    onClick={() => setClearMailPassword(false)}
+                  >
+                    取消清除
+                  </button>
+                ) : (
+                  mailPasswordSource === 'database' && (
+                    <button
+                      type="button"
+                      className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                      onClick={() => {
+                        setMailPassword('')
+                        setClearMailPassword(true)
+                      }}
+                    >
+                      清除已保存的密码
+                    </button>
+                  )
+                )}
+              </div>
             </div>
 
             <div className="grid gap-1.5">
@@ -547,11 +573,7 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
             <p className="text-[11px] text-muted-foreground">
               保存后立即生效（与「流量通道」共用同一份运行时配置）
             </p>
-            <Button
-              onClick={() => void saveRuntime('邮件配置已保存', '下次发送邮件即使用新配置')}
-              disabled={savingRuntime}
-              className="gap-1.5"
-            >
+            <Button onClick={() => void saveMail()} disabled={savingRuntime} className="gap-1.5">
               <Save className="h-4 w-4" /> {savingRuntime ? '保存中…' : '保存'}
             </Button>
           </div>

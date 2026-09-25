@@ -12,7 +12,8 @@ import { BoardPage } from './recruit/BoardPage'
 import { CyclePage } from './recruit/CyclePage'
 import { ApplicationsPage } from './recruit/ApplicationsPage'
 import { StagePage } from './recruit/StagePage'
-import { TemplatesPage } from './recruit/TemplatesPage'
+import { DemoEventDrivenPage } from './recruit/DemoEventDrivenPage'
+import { RecruitSettingsPage } from './recruit/RecruitSettingsPage'
 import { MailsPage } from './recruit/MailsPage'
 import { StoragePage } from './StoragePage'
 
@@ -73,7 +74,9 @@ export function AdminApp() {
           <Route path="recruit/defense" element={<StagePage stage="defense" />} />
           <Route path="recruit/onboard" element={<StagePage stage="onboard" />} />
           <Route path="recruit/roster" element={<ApplicationsPage />} />
-          <Route path="recruit/templates" element={<TemplatesPage />} />
+          {/* ⚠️ 临时 DEMO（事件驱动信息架构，假数据）：确认后删除本行与 DemoEventDrivenPage.tsx */}
+          <Route path="recruit/demo" element={<DemoEventDrivenPage />} />
+          <Route path="recruit/settings" element={<RecruitSettingsPage />} />
           <Route path="recruit/mails" element={<MailsPage />} />
           <Route path="content/:resource" element={<ContentPage />} />
           <Route path="audit" element={<AuditPage />} />

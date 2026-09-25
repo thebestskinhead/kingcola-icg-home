@@ -245,8 +245,12 @@ curl https://<你的域名>/api/health
 | 连接方式 | **只有 465（SSL/TLS）与 587（STARTTLS）两种**：Workers 出站被封锁 25 端口，且不允许连 localhost / 私有网段（本地开发除外） |
 | 发件邮箱 / 显示名 / 回信地址 | 发件邮箱必须落在服务商允许的发信白名单里 |
 
-- **密码不在数据库里**：`npx wrangler secret put SMTP_PASSWORD`（本地写 `.dev.vars`）。
-  后台只显示「已配置 / 未配置」，不回显、不下发前端。
+- **密码就存在数据库里**：后台「SMTP 密码 / 授权码」直接填，落库前用 `SESSION_SECRET` 派生的密钥做
+  AES-GCM 加密（存成 `enc$…` 密文）。**任何接口都不会回显它**，后台只显示「已配置 / 未配置、来自哪里」。
+  表单是三态：**留空 = 不修改；填内容 = 更新；点「清除已保存的密码」再保存 = 删掉**。
+  也支持 `npx wrangler secret put SMTP_PASSWORD`（本地写 `.dev.vars`）作为兜底 —— 数据库里有值就优先用数据库的。
+- ⚠️ 加密密钥来自 `SESSION_SECRET`：**换掉它会让已保存的 SMTP 密码解不开**（此时自动回退到 `SMTP_PASSWORD`，
+  并需要到后台重新填一次）。
 - 实现分两层：`worker/lib/smtp.ts`（`cloudflare:sockets` 的 `connect()`，逐条校验 SMTP 响应码，STARTTLS 用 `startTls()` 升级后重建读写器）
   与 `worker/lib/mailer.ts`（MIME 组装：主题按 RFC 2047 编码、正文 Base64、纯文本 + HTML 走 `multipart/alternative`）。
 - **STARTTLS 协商失败不会静默降级成明文**，会直接报 `TLS_FAILED`，提示改用 465。

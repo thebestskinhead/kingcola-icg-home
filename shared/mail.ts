@@ -29,6 +29,14 @@ export interface SmtpConfig {
   fromAddress: string
   /** 回信地址，留空则用发件邮箱 */
   replyTo: string
+  /**
+   * SMTP 登录密码 / 授权码。
+   *
+   * **只存在于服务端与 D1**：落库前用服务端 secret 加密成 `enc$…`，
+   * 所有下发接口一律剥离（`publicSmtpConfig()`），前端永远拿不到它。
+   * 取值优先级高于 `SMTP_PASSWORD` 环境变量 —— 那个只作兜底。
+   */
+  password?: string
 }
 
 export const DEFAULT_SMTP_CONFIG: SmtpConfig = {
@@ -40,6 +48,7 @@ export const DEFAULT_SMTP_CONFIG: SmtpConfig = {
   fromName: '',
   fromAddress: '',
   replyTo: '',
+  password: '',
 }
 
 export const SMTP_SECURITY_LABELS: Record<SmtpSecurity, string> = {
@@ -70,6 +79,16 @@ export function isMailReady(mail?: SmtpConfig | null): boolean {
   if (!mail.host.trim()) return false
   if (!mail.fromAddress.trim()) return false
   return mail.port > 0 && mail.port <= 65535
+}
+
+/**
+ * 下发给前端之前剥掉敏感字段。
+ *
+ * 返回值里的 `password` 是 `undefined`，`JSON.stringify` 会直接丢掉这个键 ——
+ * 前端拿到的 mail 根本没有密码字段，也就不可能把它误提交回来（留空即「不修改」）。
+ */
+export function publicSmtpConfig(mail: SmtpConfig): SmtpConfig {
+  return { ...mail, password: undefined }
 }
 
 /** 未接通的原因，用于后台提示 */

@@ -5,10 +5,12 @@
  * 校验、SQL、审计都由 shared/resources.ts 的元数据驱动，新增内容类型无需改这里。
  */
 
+import type { SmtpConfig } from '../../shared/mail'
 import { RESOURCES, isResourceKey, validateEntity } from '../../shared/resources'
 import { DEFAULT_RUNTIME_CONFIG, type RuntimeConfig } from '../../shared/runtime'
 import type { SiteConfig } from '../../shared/types'
-import { invalidateRuntimeConfigCache, resolveRuntimeConfig } from './config'
+import { invalidateRuntimeConfigCache, publicRuntimeConfig, resolveRuntimeConfig } from './config'
+import { encryptMailPassword, mailPasswordSourceOf } from '../lib/mailer'
 import { clientIp, fail, ok, readJsonBody } from '../lib/http'
 import {
   countEntities,
@@ -159,9 +161,12 @@ export async function deleteContent(ctx: RequestContext): Promise<Response> {
 
 export async function getAdminConfig(ctx: RequestContext): Promise<Response> {
   const [site, runtime] = await Promise.all([getSiteConfig(ctx.env), resolveRuntimeConfig(ctx)])
-  // 密码本身绝不下发，只告诉后台「服务端有没有配」—— 否则用户无从判断认证失败的原因
-  const mailSecretConfigured = Boolean((ctx.env.SMTP_PASSWORD ?? '').trim())
-  return ok({ site, runtime, mailSecretConfigured })
+  return ok({
+    site,
+    // 后台同样拿不到密码明文，只拿到「有没有配、配在哪」—— 所以表单留空即代表「不修改」
+    runtime: publicRuntimeConfig(runtime),
+    mailPasswordSource: mailPasswordSourceOf(ctx.env, runtime.mail),
+  })
 }
 
 interface SiteConfigBody {
@@ -175,6 +180,7 @@ export async function updateAdminConfig(ctx: RequestContext): Promise<Response> 
 
   let site: SiteConfig | null = null
   let runtime: RuntimeConfig | null = null
+  let mailPasswordSource: 'database' | 'env' | 'none' | undefined
 
   if (body.site) {
     site = await setSiteConfig(ctx.env, body.site)
@@ -189,18 +195,38 @@ export async function updateAdminConfig(ctx: RequestContext): Promise<Response> 
 
   if (body.runtime) {
     const current = await resolveRuntimeConfig(ctx)
+
+    // SMTP 密码单独处理：前端永远看不到原值，所以
+    // 没带 password 键 = 不修改；带空串 = 清除；带内容 = 更新（落库前加密）
+    const incomingMail: Partial<SmtpConfig> = { ...(body.runtime.mail ?? {}) }
+    const submittedPassword =
+      typeof incomingMail.password === 'string' ? incomingMail.password.trim() : undefined
+    delete incomingMail.password
+
+    let password = current.mail.password ?? ''
+    if (submittedPassword !== undefined) {
+      password = submittedPassword ? await encryptMailPassword(ctx.env, submittedPassword) : ''
+    }
+
+    // body.runtime 里可能夹带着提交上来的 mail（含明文密码），先摘掉再合并，免得明文进落库对象
+    const restRuntime: Partial<RuntimeConfig> = { ...body.runtime }
+    delete restRuntime.mail
+
     const next: RuntimeConfig = {
       ...DEFAULT_RUNTIME_CONFIG,
       ...current,
-      ...body.runtime,
+      ...restRuntime,
       sso: { ...current.sso, ...(body.runtime.sso ?? {}) },
-      mail: { ...current.mail, ...(body.runtime.mail ?? {}) },
+      mail: { ...current.mail, ...incomingMail, password },
       version: current.version + 1,
       updatedAt: new Date().toISOString(),
     }
     await setConfigValue(ctx.env, 'runtime', next)
     await invalidateRuntimeConfigCache(ctx.env)
-    runtime = next
+    // 密码来源要在剥离前算（剥离后就看不出「数据库里有密码」了）
+    mailPasswordSource = mailPasswordSourceOf(ctx.env, next.mail)
+    // 回给前端的永远是剥离过的版本
+    runtime = publicRuntimeConfig(next)
 
     await writeAudit(ctx.env, {
       actor: actorOf(ctx),
@@ -211,7 +237,7 @@ export async function updateAdminConfig(ctx: RequestContext): Promise<Response> 
     })
   }
 
-  return ok({ site, runtime })
+  return ok({ site, runtime, mailPasswordSource })
 }
 
 // ===== 概览与审计 =====

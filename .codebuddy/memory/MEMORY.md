@@ -81,7 +81,8 @@
 - 自检 `scripts/smoke-applications.ps1`（46 项全绿，会**备份并复原**你原有的周期配置）。
 
 ## 邮件（SMTP）
-- 契约 `shared/mail.ts`；配置存 `site_config['runtime'].mail`；密码只走 env `SMTP_PASSWORD`（不落库）。
+- 契约 `shared/mail.ts`；配置存 `site_config['runtime'].mail`。
+- **密码存 D1**（2026-09-25 起，后台「邮件」页直接填）：`SESSION_SECRET` 经 HKDF 派生密钥做 AES-GCM 加密成 `enc$<iv>.<密文>`（`crypto.ts` 的 `encryptSecret`/`decryptSecret`）；`SMTP_PASSWORD` 仅兜底（库里优先）。**下发接口一律剥离密码**（`publicSmtpConfig()` + `config.ts` 的 `publicRuntimeConfig()`），后台只拿 `mailPasswordSource`（database/env/none）；保存三态：**不带 password 键=不改 / 空串=清除 / 有值=更新**（`admin-content.ts` 必须先摘掉提交上来的 mail 再 spread，否则明文进落库对象）。解密在 `resolveRuntimeConfig` 里做，**KV 缓存写的是密文版**。
 - `worker/lib/smtp.ts`（cloudflare:sockets，465 TLS / 587 STARTTLS → startTls 后必须重建 reader/writer 再 EHLO）；`worker/lib/mailer.ts` MIME（RFC 2047 + Base64 折行）；`POST /api/admin/mail/test`（400=配置错 / 502=发送失败）。
 - 25 端口被封；生产不能连 localhost/私有网段（本地 miniflare 可以）；`import { connect, type Socket } from 'cloudflare:sockets'` 会 TS2305（Socket 是全局类型）。
 
