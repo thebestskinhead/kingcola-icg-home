@@ -49,6 +49,14 @@ import {
   updateRecruitSettings,
 } from './routes/admin-recruit'
 import {
+  createSessionAdmin,
+  deleteSessionAdmin,
+  issueCheckinTokenAdmin,
+  listSessionsAdmin,
+  revokeCheckinTokensAdmin,
+  updateSessionAdmin,
+} from './routes/admin-sessions'
+import {
   checkin,
   confirmInvite,
   getCheckinInfo,
@@ -98,9 +106,10 @@ const routes: RouteDef[] = [
   // 邀请函：凭证即密权，不要求登录（会话过期了也能确认加入）
   { method: 'GET', path: '/api/applications/invite/:token', handler: getInvite },
   { method: 'POST', path: '/api/applications/invite/:token', handler: confirmInvite },
-  // 扫码签到：当前是空实现（填姓名 + 学号即签到），所以不需要登录态
-  { method: 'GET', path: '/api/applications/checkin-info', handler: getCheckinInfo },
-  { method: 'POST', path: '/api/applications/checkin', handler: checkin },
+  // 扫码签到：凭证（token）即密权 —— 绑场次 + 带失效时间，所以不需要登录态，
+  // 也没有裸入口（导航里不出现，直接访问无 token 的路径拿不到任何信息）。
+  { method: 'GET', path: '/api/applications/checkin/:token', handler: getCheckinInfo },
+  { method: 'POST', path: '/api/applications/checkin/:token', handler: checkin },
 
   // ---- 教务网单点登录（授权码模式，授权服务器部署在国内 EdgeOne） ----
   { method: 'GET', path: '/api/auth/login', handler: ssoLogin },
@@ -140,6 +149,25 @@ const routes: RouteDef[] = [
   { method: 'POST', path: '/api/admin/recruit/auto', handler: runRecruitAuto, auth: 'admin' },
   { method: 'GET', path: '/api/admin/recruit/export', handler: exportRecruitCsv, auth: 'admin' },
   { method: 'GET', path: '/api/admin/recruit/mails', handler: getRecruitMails, auth: 'admin' },
+
+  // ---- 后台：考试场次与签到二维码 ----
+  { method: 'GET', path: '/api/admin/recruit/sessions', handler: listSessionsAdmin, auth: 'admin' },
+  { method: 'POST', path: '/api/admin/recruit/sessions', handler: createSessionAdmin, auth: 'admin' },
+  // 比 :id 更长的路径先注册，避免被参数路由截胡
+  {
+    method: 'POST',
+    path: '/api/admin/recruit/sessions/:id/checkin-token',
+    handler: issueCheckinTokenAdmin,
+    auth: 'admin',
+  },
+  {
+    method: 'POST',
+    path: '/api/admin/recruit/checkin-tokens/revoke',
+    handler: revokeCheckinTokensAdmin,
+    auth: 'admin',
+  },
+  { method: 'PUT', path: '/api/admin/recruit/sessions/:id', handler: updateSessionAdmin, auth: 'admin' },
+  { method: 'DELETE', path: '/api/admin/recruit/sessions/:id', handler: deleteSessionAdmin, auth: 'admin' },
 
   // ---- 后台：报名明细（列表 / 详情 / 改状态 / 批量 / 批量通知信 / 下载） ----
   { method: 'GET', path: '/api/admin/applications', handler: listApplicationsAdmin, auth: 'admin' },

@@ -9,7 +9,7 @@
  */
 
 import type { RecruitResult, RecruitStage } from '../../shared/recruit'
-import type { Application } from '../../shared/types'
+import type { Application, ApplicationSource } from '../../shared/types'
 import type { Env } from '../env'
 import { randomId } from './crypto'
 
@@ -35,6 +35,11 @@ const COLUMNS: ReadonlyArray<readonly [keyof ApplicationRecord, string]> = [
   ['writtenCheckinAt', 'written_checkin_at'],
   ['interviewCheckinAt', 'interview_checkin_at'],
   ['defenseCheckinAt', 'defense_checkin_at'],
+  // 签到落在哪一场（开放参加制：同学任选一场，后台据此按场次统计到场）+ 报名来源
+  ['writtenSessionId', 'written_session_id'],
+  ['interviewSessionId', 'interview_session_id'],
+  ['defenseSessionId', 'defense_session_id'],
+  ['source', 'source'],
   ['writtenScore', 'written_score'],
   ['interviewScore', 'interview_score'],
   ['defenseScore', 'defense_score'],
@@ -88,6 +93,8 @@ export interface NewApplication {
   fileUrl: string
   fileName: string
   fileSize: number
+  /** 报名来源：官网自助提交（默认）或管理员补录的未报名考生 */
+  source?: ApplicationSource
 }
 
 export async function createApplication(env: Env, input: NewApplication): Promise<ApplicationRecord> {
@@ -97,8 +104,8 @@ export async function createApplication(env: Env, input: NewApplication): Promis
   await env.DB.prepare(
     `INSERT INTO applications
        (id, student_id, name, email, phone, qq, file_url, file_name, file_size,
-        stage, result, stage_changed_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'apply', '', ?, ?, ?)`,
+        source, stage, result, stage_changed_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'apply', '', ?, ?, ?)`,
   )
     .bind(
       id,
@@ -110,6 +117,7 @@ export async function createApplication(env: Env, input: NewApplication): Promis
       input.fileUrl,
       input.fileName,
       input.fileSize,
+      input.source ?? 'web',
       now,
       now,
       now,

@@ -19,11 +19,15 @@ import {
   APPLICATION_DOC_SCOPE,
   checkinEligibility,
   isApplyOpen,
-  isCheckinStage,
+  isCheckinTokenUsable,
   isInviteUsable,
   normalizeName,
   recruitNotice,
   recruitPhase,
+  RECRUIT_STAGE_LABELS,
+  sessionLabel,
+  sessionsOfStage,
+  sessionTimeText,
   validateApplicationForm,
   validateCheckin,
   type CheckinStage,
@@ -40,6 +44,7 @@ import {
 } from '../lib/applications'
 import { clientIp, fail, ok, readJsonBody } from '../lib/http'
 import { getRecruitSettings } from '../lib/recruit-config'
+import { getCheckinToken, getSession, listSessions, SESSION_FIELD } from '../lib/recruit-sessions'
 import { createEntity, getSiteConfig, writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
 import { getStorage, storageReady } from '../lib/storage'
@@ -51,13 +56,6 @@ const CHECKIN_COLUMN: Record<CheckinStage, 'writtenCheckinAt' | 'interviewChecki
   interview: 'interviewCheckinAt',
   defense: 'defenseCheckinAt',
 }
-
-/** 该阶段在流程里对应第几段，签到「人到了就推进阶段」时用 */
-const CHECKIN_STAGE_MAP = {
-  written: 'written',
-  interview: 'interview',
-  defense: 'defense',
-} as const
 
 function identityOf(ctx: RequestContext): { studentId: string; name: string } | null {
   const student = ctx.student
@@ -356,28 +354,49 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
   })
 }
 
-// ===== 扫码签到（空实现） =====
+// ===== 扫码签到（凭证即密权：token 绑场次 + 带失效时间） =====
 
 interface CheckinBody {
-  stage?: string
   name?: string
   studentId?: string
 }
 
+/** 凭证 → 场次。凭证无效、过期、已作废、场次已删，统一返回 null 由调用方按「无效」回应 */
+async function resolveCheckinTarget(
+  ctx: RequestContext,
+): Promise<{ stage: CheckinStage; sessionId: string; label: string; timeText: string } | null> {
+  const record = await getCheckinToken(ctx.env, ctx.params.token ?? '')
+  if (!record || !isCheckinTokenUsable(record.expiresAt, record.revokedAt)) return null
+
+  const session = await getSession(ctx.env, record.sessionId)
+  if (!session) return null
+
+  // 场次名没填时按阶段内的序号兜底，所以要把同阶段的场次都取来定位自己
+  const siblings = sessionsOfStage(await listSessions(ctx.env), session.stage)
+  const index = Math.max(0, siblings.findIndex((item) => item.id === session.id))
+  return {
+    stage: session.stage,
+    sessionId: session.id,
+    label: sessionLabel(session, index),
+    timeText: sessionTimeText(session),
+  }
+}
+
 /**
- * 签到页提交的入口。**当前是刻意的空实现**：
- * 不做短信/二维码凭证校验，只要求「姓名 + 学号」与该阶段的报名记录一致。
- * 后续要做真扫码时，在这里加一个短时令牌校验即可，前端与数据层都不用动。
+ * 签到页提交的入口。
+ *
+ * 不要求登录态：同学在线下扫二维码进来，手上不一定有会话。
+ * 凭证就是二维码里的 token（绑场次 + 带失效时间），再要求「姓名 + 学号」与报名记录一致。
  */
 export async function checkin(ctx: RequestContext): Promise<Response> {
+  const target = await resolveCheckinTarget(ctx)
+  if (!target) {
+    return fail(404, 'CHECKIN_TOKEN_INVALID', '这个签到二维码不存在、已失效或已被作废，请找现场工作人员确认')
+  }
+  const stage = target.stage
+
   const body = await readJsonBody<CheckinBody>(ctx.request)
   if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
-
-  const stageRaw = String(body.stage ?? '').trim()
-  if (!isCheckinStage(stageRaw)) {
-    return fail(400, 'INVALID_STAGE', '签到阶段不合法')
-  }
-  const stage: CheckinStage = stageRaw
 
   const invalid = validateCheckin(body)
   if (invalid) return fail(400, 'VALIDATION_FAILED', invalid)
@@ -403,15 +422,24 @@ export async function checkin(ctx: RequestContext): Promise<Response> {
 
   const column = CHECKIN_COLUMN[stage]
   if (record[column]) {
-    return ok({ already: true, name: record.name, stage, at: record[column] })
+    return ok({
+      already: true,
+      name: record.name,
+      stage,
+      at: record[column],
+      sessionId: record[SESSION_FIELD[stage]],
+      sessionLabel: target.label,
+    })
   }
 
   const now = new Date().toISOString()
-  // 签到即代表「来了」：阶段推进到当前环节、结果记为「已参加」（尚未出结果）。
+  // 签到即代表「来了」：阶段推进到当前环节、结果记为「已参加」（尚未出结果），
+  // 同时记下「签的是哪一场」，后台才能按场次统计到场人数。
   // 也覆盖「后台还没来得及把人推进到笔试就先开考了」的情况（eligibility = ahead）。
   await updateApplication(ctx.env, record.id, {
     [column]: now,
-    stage: CHECKIN_STAGE_MAP[stage],
+    [SESSION_FIELD[stage]]: target.sessionId,
+    stage,
     result: 'attended' as RecruitResult,
     stageChangedAt: now,
   })
@@ -421,25 +449,42 @@ export async function checkin(ctx: RequestContext): Promise<Response> {
     action: `checkin_${stage}`,
     resource: 'applications',
     targetId: record.id,
-    detail: `${record.name}（${record.studentId}）${record.stage} → ${stage}`,
+    detail: `${record.name}（${record.studentId}）${record.stage} → ${stage} · ${target.label}`,
     ...requestMeta(ctx),
   })
 
-  return ok({ already: false, name: record.name, stage, at: now })
+  return ok({
+    already: false,
+    name: record.name,
+    stage,
+    at: now,
+    sessionId: target.sessionId,
+    sessionLabel: target.label,
+  })
 }
 
-/** 签到页自己要渲染的文案（阶段名写在页面上） */
+/**
+ * 签到页自己要渲染的文案（阶段名、场次时间地点都写在页面上）。
+ * 凭证无效时不返回任何信息 —— 页面只显示「二维码无效」，不泄露「这里有场考试」。
+ */
 export async function getCheckinInfo(ctx: RequestContext): Promise<Response> {
-  const stageRaw = ctx.url.searchParams.get('stage') ?? ''
-  if (!isCheckinStage(stageRaw)) return fail(400, 'INVALID_STAGE', '签到阶段不合法')
+  const target = await resolveCheckinTarget(ctx)
+  if (!target) {
+    return fail(404, 'CHECKIN_TOKEN_INVALID', '这个签到二维码不存在、已失效或已被作废')
+  }
 
   const [settings, site] = await Promise.all([
     getRecruitSettings(ctx.env),
     getSiteConfig(ctx.env),
   ])
+
   return ok(
     {
-      stage: stageRaw,
+      stage: target.stage,
+      stageLabel: RECRUIT_STAGE_LABELS[target.stage],
+      sessionId: target.sessionId,
+      sessionLabel: target.label,
+      sessionTime: target.timeText,
       cycleName: settings.cycle.name,
       studioName: site.studioName,
     },

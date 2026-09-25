@@ -215,12 +215,23 @@ export function fetchRecruitStatus(signal?: AbortSignal) {
 
 export interface CheckinInfo {
   stage: CheckinStage
+  /** 阶段中文名，如「笔试」 */
+  stageLabel: string
+  sessionId: string
+  /** 场次称呼，如「第一场」「上午场」 */
+  sessionLabel: string
+  /** 场次时间文本，如「2026 年 10 月 8 日 14:00–16:00」 */
+  sessionTime: string
   cycleName: string
   studioName: string
 }
 
-export function fetchCheckinInfo(stage: CheckinStage) {
-  return apiRequest<CheckinInfo>(`/api/applications/checkin-info?stage=${stage}`)
+/**
+ * 读取签到页要展示的信息。`token` 就是二维码里的凭证（绑场次 + 带失效时间），
+ * 无效 / 过期 / 被作废时后端返回 404，且不透露任何场次信息。
+ */
+export function fetchCheckinInfo(token: string, signal?: AbortSignal) {
+  return apiRequest<CheckinInfo>(`/api/applications/checkin/${encodeURIComponent(token)}`, { signal })
 }
 
 export interface CheckinResult {
@@ -228,10 +239,15 @@ export interface CheckinResult {
   name: string
   stage: CheckinStage
   at: string
+  sessionId: string
+  sessionLabel: string
 }
 
-export function submitCheckin(body: { stage: CheckinStage; name: string; studentId: string }) {
-  return apiRequest<CheckinResult>('/api/applications/checkin', jsonInit('POST', body))
+export function submitCheckin(token: string, body: { name: string; studentId: string }) {
+  return apiRequest<CheckinResult>(
+    `/api/applications/checkin/${encodeURIComponent(token)}`,
+    jsonInit('POST', body),
+  )
 }
 
 // ===== 招新（学生侧） =====

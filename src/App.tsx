@@ -103,8 +103,9 @@ function PublicSite() {
             <Route path={PAGE_PATHS.join} element={<JoinSection site={site} />} />
             {/* 邀请函确认页：链接由邮件发出，凭 token 进入，不要求登录 */}
             <Route path={`${INVITE_PATH}/:token`} element={<InviteSection site={site} />} />
-            {/* 扫码签到页：二维码指向这里，填姓名 + 学号即可（当前为空实现） */}
-            <Route path={`${CHECKIN_PATH}/:stage`} element={<CheckinSection site={site} />} />
+            {/* 扫码签到页：只有后台按场次签发的二维码会指向这里（token 即凭证），
+                没有裸入口 —— 不填 token 或 token 失效都拿不到任何场次信息 */}
+            <Route path={`${CHECKIN_PATH}/:token`} element={<CheckinSection site={site} />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         )}

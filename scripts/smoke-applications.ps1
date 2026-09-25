@@ -5,7 +5,7 @@
 #   1) 周期配置：时间窗决定报名通道开闭（未开始 / 报名中 / 已结束）
 #   2) 学生提交报名表（multipart + 文件头校验 + 落对象存储 + 落库）
 #   3) 报名表私有性：匿名与学生本人都拿不到，只有管理员能下载
-#   4) 扫码签到：填姓名 + 学号即签到（空实现），签到后状态变「已参加」
+#   4) 扫码签到：先建场次 → 签发二维码 → 凭 token 签到，签到后状态变「已参加」并记下签的哪一场
 #   5) 自动流程（预览 → 执行）：缺考标记、按成绩生成面试名单、
 #      面试录取、答辩通过 → 每一步都验证状态与发信日志
 #   6) 邀请函确认 → 写入成员表
@@ -88,6 +88,7 @@ foreach ($s in $students) {
 
 $appIds = @{}
 $inviteUrl = ''
+$sessId = ''
 $originalCycle = $null
 
 Write-Host "招新系统自检 → $Base`n" -ForegroundColor Cyan
@@ -154,19 +155,31 @@ try {
     $aNow = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
     Check '甲已进入笔试阶段' ($aNow.stage -eq 'written' -and $aNow.result -eq '') "$($aNow.stage)/$($aNow.result)"
 
-    # ===== 4. 扫码签到（空实现） =====
+    # ===== 4. 扫码签到（凭证 = 场次二维码） =====
     Write-Host "`n4) 扫码签到"
+    # 场次时间刻意放在过去：它会反写周期的 writtenEnd，而下一步的「缺考标记」正依赖它已经过点
+    $sess = (Api 'POST' '/api/admin/recruit/sessions' @{
+        stage = 'written'; name = '自检场次'; startsAt = (Cn -120); endsAt = (Cn -60); place = '自检教室'
+    } $jar).data.session
+    $sessId = $sess.id
+    $code = (Api 'POST' "/api/admin/recruit/sessions/$sessId/checkin-token" @{} $jar).data
+    Check '二维码指向 /checkin/<token>' ($code.url -match ('/checkin/' + $code.token + '$')) $code.url
+    Check '老的裸签到接口已下线（404）' (
+        (& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications/checkin" -H 'content-type: application/json' --data-raw '{"stage":"written","name":"x","studentId":"y"}') -eq '404'
+    )
+
     foreach ($key in @('a', 'b')) {
         $s = $students | Where-Object { $_.key -eq $key }
-        $result = Api 'POST' '/api/applications/checkin' @{ stage = 'written'; name = $s.name; studentId = $s.id }
+        $result = Api 'POST' "/api/applications/checkin/$($code.token)" @{ name = $s.name; studentId = $s.id }
         Check "$($s.name) 签到成功并转为「已参加」" ($result.ok -eq $true -and $result.data.already -eq $false)
     }
-    $again = Api 'POST' '/api/applications/checkin' @{ stage = 'written'; name = $students[0].name; studentId = $students[0].id }
+    $again = Api 'POST' "/api/applications/checkin/$($code.token)" @{ name = $students[0].name; studentId = $students[0].id }
     Check '重复签到提示已签到' ($again.ok -eq $true -and $again.data.already -eq $true)
-    $wrongName = Api 'POST' '/api/applications/checkin' @{ stage = 'written'; name = '张三'; studentId = $students[0].id }
-    Check '姓名不符被拒 403' ($wrongName.ok -eq $false)
+    $wrongName = Api 'POST' "/api/applications/checkin/$($code.token)" @{ name = '张三'; studentId = $students[0].id }
+    Check '姓名不符被拒（NAME_MISMATCH）' ($wrongName.ok -eq $false -and $wrongName.error.code -eq 'NAME_MISMATCH')
     $afterCheckin = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
     Check '签到后 result=attended' ($afterCheckin.result -eq 'attended') $afterCheckin.result
+    Check '签到记下了签的是哪一场' ($afterCheckin.writtenSessionId -eq $sessId) $afterCheckin.writtenSessionId
 
     # ===== 5. 缺考自动标记 =====
     Write-Host "`n5) 缺考标记（自动流程）"
@@ -255,7 +268,8 @@ try {
     $null = Api 'DELETE' "/api/admin/content/members/$memberId" $null $jar
 }
 finally {
-    # 复原招新周期配置（脚本开头备份过）
+    # 先删掉自检造的场次（场次变化会反写周期里的笔试时间），再复原周期配置
+    if ($sessId) { $null = Api 'DELETE' "/api/admin/recruit/sessions/$sessId" $null $jar }
     if ($null -ne $originalCycle) {
         $null = Api 'PUT' '/api/admin/recruit' @{ cycle = $originalCycle } $jar
         Write-Host '  已复原原有的招新周期配置' -ForegroundColor Yellow
