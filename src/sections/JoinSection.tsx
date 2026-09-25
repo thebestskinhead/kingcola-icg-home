@@ -5,10 +5,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   STUDENT_LOGIN_URL,
+  fetchRecruitStatus,
   myApplication,
   studentLogout,
   studentMe,
   submitApplication,
+  type RecruitSchedule,
+  type RecruitStatus,
 } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import { useSsoTarget } from '@/api/hooks'
@@ -21,7 +24,7 @@ import {
 import { isSsoReady } from '@shared/runtime'
 import { parseJoinSteps, splitLines } from '@shared/site'
 import type { Application, SiteConfig } from '@/types'
-import { CheckCircle2, QrCode, ShieldCheck, Upload, X } from 'lucide-react'
+import { CalendarClock, CheckCircle2, QrCode, ShieldCheck, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -60,23 +63,23 @@ function consumeLoginNotice(): { ok: boolean; text: string } | null {
   return { ok: false, text: LOGIN_NOTICE[flag] ?? '登录未完成，请重试' }
 }
 
-/** 文件大小的人类可读写法 */
 function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
 }
 
 export function JoinSection({ site }: { site: SiteConfig }) {
-  const recruitOpen = site.recruitOpen
   const steps = parseJoinSteps(site.joinSteps)
   const requirements = splitLines(site.joinRequirements)
-  // 登录入口是否展示由后台决定：开关打开且填了授权服务器地址才算接通
   const sso = useSsoTarget()
   const ssoReady = isSsoReady(sso)
 
+  /** 本轮招新的时间窗与状态（后台「招新周期」维护） */
+  const [cycle, setCycle] = useState<RecruitStatus | null>(null)
+
   const [auth, setAuth] = useState<AuthState>('checking')
   const [identity, setIdentity] = useState<Identity | null>(null)
-  /** 已提交过的报名记录；有它就不再展示上传表单，改展示进度 */
   const [application, setApplication] = useState<Application | null>(null)
+  const [schedule, setSchedule] = useState<RecruitSchedule | null>(null)
   const [inviteUrl, setInviteUrl] = useState('')
   const [appLoading, setAppLoading] = useState(false)
 
@@ -93,11 +96,11 @@ export function JoinSection({ site }: { site: SiteConfig }) {
     try {
       const result = await myApplication()
       setApplication(result.application)
+      setSchedule(result.schedule)
       setInviteUrl(result.inviteUrl ?? '')
     } catch {
       // 查询失败不阻断页面：表单照常可用，提交时后端还会再查一次
       setApplication(null)
-      setInviteUrl('')
     } finally {
       setAppLoading(false)
     }
@@ -117,7 +120,6 @@ export function JoinSection({ site }: { site: SiteConfig }) {
         setAuth('anonymous')
       }
     } catch {
-      // 查询失败不阻断页面：按未登录处理，用户仍可手动点登录
       setIdentity(null)
       setAuth('anonymous')
     }
@@ -129,6 +131,9 @@ export function JoinSection({ site }: { site: SiteConfig }) {
       if (notice.ok) toast.success(notice.text)
       else toast.error(notice.text)
     }
+    void fetchRecruitStatus()
+      .then(setCycle)
+      .catch(() => setCycle(null))
     void refreshIdentity()
   }, [refreshIdentity])
 
@@ -192,8 +197,9 @@ export function JoinSection({ site }: { site: SiteConfig }) {
       toast.success('报名表已提交，我们会尽快安排笔试', {
         description: '笔试与面试安排会同时发到你的邮箱，请留意查收',
       })
+      // 顺带把最新的安排取回来（后台可能刚更新了笔试时间）
+      await loadApplication()
     } catch (error) {
-      // 已经报过名：把已有记录取回来展示进度，而不是让同学对着报错发呆
       if (error instanceof ApiError && error.code === 'ALREADY_APPLIED') {
         await loadApplication()
         toast.info(error.message)
@@ -205,6 +211,34 @@ export function JoinSection({ site }: { site: SiteConfig }) {
     }
   }
 
+  // ===== 报名通道是否开放：总开关 × 本轮的报名时间窗 =====
+  const applyOpen = site.recruitOpen && (cycle?.applyOpen ?? false)
+  const phase = cycle?.phase ?? 'not_configured'
+  const hasApplication = Boolean(application)
+
+  /** 右侧面板的三种「不能报名」形态 */
+  const closedNotice = (() => {
+    if (phase === 'closed') {
+      return { title: '本届招新已结束', desc: '感谢关注，欢迎下一轮招新再来。' }
+    }
+    if (phase === 'upcoming') {
+      return {
+        title: '报名尚未开始',
+        desc: cycle?.applyStartText ? `报名开放时间：${cycle.applyStartText}` : '招新时间即将公布。',
+      }
+    }
+    if (phase === 'in_progress') {
+      return {
+        title: '报名已截止',
+        desc: '本次报名通道已关闭；已报名的同学登录后可继续查看自己的进度。',
+      }
+    }
+    if (!site.recruitOpen) {
+      return { title: '当前不在招新期', desc: '报名通道暂未开放，也欢迎先通过页脚邮箱与我们联系。' }
+    }
+    return { title: '招新时间尚未公布', desc: '请稍后再来，或先通过页脚邮箱与我们取得联系。' }
+  })()
+
   return (
     <div className="mx-auto max-w-6xl animate-fade-up px-4 py-14 sm:px-6">
       <div className="mb-12">
@@ -212,6 +246,12 @@ export function JoinSection({ site }: { site: SiteConfig }) {
         <p className="mt-3 max-w-2xl whitespace-pre-line text-sm leading-relaxed text-muted-foreground">
           {site.joinIntro}
         </p>
+        {cycle?.notice && (
+          <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-secondary/70 px-4 py-1.5 text-xs text-foreground/75">
+            <CalendarClock className="h-3.5 w-3.5 text-accent" />
+            {cycle.notice}
+          </p>
+        )}
       </div>
 
       <div className="grid gap-14 lg:grid-cols-[1fr_1.1fr]">
@@ -246,14 +286,12 @@ export function JoinSection({ site }: { site: SiteConfig }) {
           )}
         </div>
 
-        {/* ===== 右：登录 / 报名表上传 / 进度 ===== */}
+        {/* ===== 右：登录 / 提交 / 进度 ===== */}
         <div className="border border-border bg-card p-6 sm:p-8">
-          {!recruitOpen && !(auth === 'authenticated' && application) ? (
+          {!applyOpen && !hasApplication ? (
             <div className="flex flex-col items-center py-16 text-center">
-              <h3 className="font-display text-2xl font-bold">当前不在招新期</h3>
-              <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-                报名通道暂未开放。也欢迎先通过页脚邮箱与我们取得联系。
-              </p>
+              <h3 className="font-display text-2xl font-bold">{closedNotice.title}</h3>
+              <p className="mt-2 max-w-sm text-sm text-muted-foreground">{closedNotice.desc}</p>
             </div>
           ) : auth === 'checking' || (auth === 'authenticated' && appLoading) ? (
             <div className="flex flex-col items-center py-16">
@@ -263,9 +301,7 @@ export function JoinSection({ site }: { site: SiteConfig }) {
               </p>
             </div>
           ) : auth === 'anonymous' ? (
-            /* ---- 未登录 ---- */
             !ssoReady ? (
-              /* 后台未接通教务网登录：不展示登录入口，给出可执行的替代方案 */
               <div className="flex flex-col items-center py-12 text-center">
                 <h3 className="font-display text-2xl font-bold">教务网登录暂未开放</h3>
                 <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
@@ -273,7 +309,6 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 </p>
               </div>
             ) : (
-              /* 一键跳转教务网 */
               <div className="flex flex-col items-center py-10 text-center">
                 <h3 className="font-display text-2xl font-bold">提交你的报名表</h3>
                 <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
@@ -288,9 +323,22 @@ export function JoinSection({ site }: { site: SiteConfig }) {
               </div>
             )
           ) : application ? (
-            /* ---- 已登录且已提交过：展示进度 ---- */
             <>
-              <ApplicationProgress application={application} inviteUrl={inviteUrl} />
+              <ApplicationProgress
+                application={application}
+                schedule={
+                  schedule ?? {
+                    writtenAt: '',
+                    writtenPlace: '',
+                    interviewAt: '',
+                    interviewPlace: '',
+                    defenseStart: '',
+                    defenseEnd: '',
+                    onboardDeadline: '',
+                  }
+                }
+                inviteUrl={inviteUrl}
+              />
               <div className="mt-5 flex items-center justify-between border-t border-border pt-4 text-xs text-muted-foreground">
                 <span>
                   {identity?.name || '已登录'} {identity?.studentId}
@@ -301,7 +349,6 @@ export function JoinSection({ site }: { site: SiteConfig }) {
               </div>
             </>
           ) : (
-            /* ---- 已登录且尚未报名：填写并上传 ---- */
             <>
               <div className="flex items-center justify-between">
                 <h2 className="font-display text-2xl font-bold">提交你的报名表</h2>
@@ -310,7 +357,6 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 </span>
               </div>
 
-              {/* 已登录身份 */}
               <div className="mt-4 flex items-center gap-2.5 rounded-xl border border-border bg-secondary/40 px-4 py-3">
                 <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
                 <div className="min-w-0 text-sm">
@@ -329,7 +375,6 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 身份信息由学校教务网提供，不可手动修改 · {APPLICATION_DOC_HINT}
               </p>
 
-              {/* 文件拖放区 */}
               <label
                 onDragOver={(e) => {
                   e.preventDefault()

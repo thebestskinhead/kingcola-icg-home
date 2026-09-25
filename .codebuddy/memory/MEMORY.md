@@ -5,7 +5,7 @@
 
 ## 环境约定（本机）
 - PATH 无 node/npm：`Import-Module D:\usexxx\use-xxx.psm1; use-node 22.23.2`（必须 22.23.2，Vite 7 要求）。
-- npm registry `npm.mirrors.msh.team` 已失效：package-lock 里替换为 `https://registry.npmmirror.com/` 后 `npm install --registry=https://registry.npmmirror.com`。
+- npm registry `npm.mirrors.msh.team` 已失效：package-lock 里替换为 `https://registry.npmmirror.com/` 后 `npm install --registry=https://registry.npmmirror.com`。镜像实测可用（2026-09-25 用它装了 `qrcode.react@4.2.0`，lock 没带回失效主机名）。
 - 含中文的 `.ps1` 必须 `pwsh` 运行（5.1 编码错乱）。
 - wrangler 4.137.0；本地密钥在 `.dev.vars`（gitignore）；本地管理员 `admin` / `kingcola-dev-2026`。
 
@@ -38,11 +38,47 @@
 - 已本地端到端冒烟全绿（配置读写/上传/读取/一次性令牌 #1=200 #2=403/applications 匿名 404）。冒烟技巧：kc_admin Cookie 恒带 `Secure`，本地 HTTP 下必须从 cookie jar 手动取 token 回传 `cookie:` 头；PS 内联 JSON 用 `--data-binary $body` 变量（`{\"..\"}` 转义会发非法体）。
 - 业务口约定：站点图 URL 可存 `/api/files/<key>` 或 publicBase 直链；`resolveFileRef()` 两种前缀都能反解。applications/ 前缀仍是私有文件。
 
-## 招新报名（applications）
-- 14 态状态机，契约在 `shared/recruit.ts`（`APPLICATION_STATUS_META` / TRANSITIONS / `noticeForStatus` / `validateApplicationForm` / 20MB / `APPLICATION_DOC_SCOPE='applications'`）；`member` 是唯一终态终态不可流转；改判不发邮件。
-- 学生 `POST /api/applications`（multipart，auth:'student'）存 R2；`GET /api/files/*` 拦私有前缀，管理员唯一下载口 `GET /api/admin/applications/:id/file`（RFC 5987 中文文件名）。邀请函 `invited` 时签发 24 位 token + 14 天 TTL，`/invite/:token`（InviteSection）确认后 `createEntity(members)`。
-- 状态流转只有 PUT 一个写口（改状态+写过程字段+发信原子）；返回 `{ application, mail }`。
-- 后台 `src/admin/ApplicationsPage.tsx`；迁移 `migrations/0006_applications.sql`（已有库要 `d1 execute --file=` 单独跑）；自检 `scripts/smoke-applications.ps1`。
+## 招新系统（applications · 2026-09-25 重构为整届流水线）
+- **状态用「阶段 + 结果」两列**，不是单列枚举：`stage` ∈ apply/written/interview/defense/onboard，
+  `result` ∈ ''（待定）/attended/passed/failed/absent/declined/withdrawn。
+  「是否已安排笔试/面试」不再是个人状态，而是**全局周期时间窗**；中文标签由 `applicationLabel(stage,result)` 派生、**不入库**。
+  阶段只能相邻推进或退回一步（`canMoveStage`），单列枚举（旧的 14 态）已废弃。
+- 契约全在 **`shared/recruit.ts`**（阶段/结果/标签/流转/`STAGE_RESULTS`/`checkinEligibility`/周期 `RecruitCycleConfig`/
+  7 条邮件模板 `RecruitTemplates`/自动任务 `RecruitAutoTask`/CSV 列 `RECRUIT_EXPORT_COLUMNS`）；
+  **`shared/time.ts` 是北京时间工具**（`cnTimeToEpoch`/`cnTimeToText`/`cnTimeToShort`）——
+  服务器在 UTC，**绝不能** `new Date('2026-09-25T09:00')`，会差 8 小时。
+- **周期配置存 D1 `site_config['recruit']`**（刻意不放 runtime：runtime 是每个访客都会拉的公开配置，
+  模板正文不该下发给所有人），无迁移。  `recruitPhase()` 派生 not_configured/upcoming/applying/in_progress/closed；
+  **报名通道 = 在报名时间窗内 且 尚未确认笔试名单**（`isApplyOpen()` 判定，周期 `writtenConfirmedAt` 非空即关）。
+  `site.recruitOpen` 手动总开关**正在移除**、改为由周期派生（0–9 复审定案）。非招新期后台「报名/成绩/自动流程」三页显示未开始/已结束，
+  周期与模板页始终可进。
+- **自动流程六个任务**（`/api/admin/recruit/auto` GET 预览 → POST 执行，`worker/lib/recruit-auto.ts`）：
+  `confirm_written`（报名→笔试 + 笔试邀请）→ `mark_absent`（宽限期内未签到→absent）→
+  `advance_written`（按前 N 名/分数线 → interview + 面试邀请 / failed + 感谢信）→
+  `advance_interview`（勾选录取→defense + 面试通过通知 / 其余 failed + 感谢信）→
+  `advance_defense`（勾选通过→onboard + 邀请函 / 其余 failed + 感谢信）→ `close_cycle`。
+  后两个需要人工勾选名单，**未勾选的会被判为未通过并立刻发感谢信**，所以必须先预览。
+  只按「目标状态」决定发哪封信 → 改判（failed→passed）不会误发。
+- **Cron 兜底**（`wrangler.toml` `[triggers] crons = ["0 16 * * *"]` = 北京 0 点）→ `runRecruitScheduled()`：
+  只做「缺考标记」与「到点关闭」，需要决策的一律不自动做。
+- **关闭本届 = 先归档再清空**：未确认的记 absent → 导出 CSV 到对象存储 `applications/archives/` →
+  存档信息追加进周期的 `archives` → 删报名表文件 → 清空 `applications` 与 `application_mails` → 写 `closedAt`。
+- **签到 = 场次 + 凭证**（`migrations/0008_recruit_sessions.sql`）：`recruit_sessions` 一场一条
+  （stage/name/starts_at/ends_at/place/note/sort_order）——**开放参加制**：邀请函列出全部场次、同学现场任选一场，
+  不预排座位，也天然容纳临时来考的人；`recruit_checkin_tokens`（token 绑 `session_id` + `expires_at` + `revoked_at`，
+  同一场次可重复签发、旧码一键作废）。签到页**只有** `/checkin/<token>`（`checkinTokenPath`），**没有裸入口**。
+  `checkinEligibility()` 的 `ahead` 分支保留（人在考场不能因后台没点按钮签不了）。
+  `applications` 增 `written_session_id`/`interview_session_id`/`defense_session_id`（签的哪一场，按场次统计到场）
+  与 `source`（`web` 官网提交 / `manual` 管理员补录未报名考生）。
+  ⚠️ **`QR_SIGN_SECRET` 是 SSO applyToken 验签密钥，不是签到二维码密钥**，别复用。
+- 表 `applications` + `application_mails`（`0007_recruit_stages.sql`）+ `recruit_sessions`/`recruit_checkin_tokens`
+  （`0008_recruit_sessions.sql`；0007 重建了 applications 并映射旧枚举）。已有库都要
+  `d1 execute --file=` 单独跑，不能整体 `db:migrate`。报名表与存档都在对象存储 `applications/` 前缀（私有，
+  `GET /api/files/*` 一律 404，唯一下载口 `GET /api/admin/applications/:id/file`）。
+- 后台是**一个侧栏入口 `/admin/recruit` + 内部页签**（`src/admin/recruit/`）：
+  看板 / 周期与签到 / 报名管理 / 成绩录入 / 自动流程 / 邮件模板 / 邮件日志；
+  共用 `useRecruitSettings.ts`（**必须单独一个文件**，否则 react-refresh 规则会报错）与 `RecruitTabs.tsx`。
+- 自检 `scripts/smoke-applications.ps1`（46 项全绿，会**备份并复原**你原有的周期配置）。
 
 ## 邮件（SMTP）
 - 契约 `shared/mail.ts`；配置存 `site_config['runtime'].mail`；密码只走 env `SMTP_PASSWORD`（不落库）。

@@ -7,7 +7,9 @@ import { ProjectsSection } from '@/sections/ProjectsSection'
 import { NewsSection } from '@/sections/NewsSection'
 import { JoinSection } from '@/sections/JoinSection'
 import { InviteSection } from '@/sections/InviteSection'
+import { CheckinSection } from '@/sections/CheckinSection'
 import { Footer } from '@/sections/Footer'
+import { CHECKIN_PATH } from '@shared/recruit'
 import { Toaster } from '@/components/ui/sonner'
 import { AdminApp } from '@/admin/AdminApp'
 import { refreshRuntimeConfig } from '@/api/client'
@@ -101,6 +103,8 @@ function PublicSite() {
             <Route path={PAGE_PATHS.join} element={<JoinSection site={site} />} />
             {/* 邀请函确认页：链接由邮件发出，凭 token 进入，不要求登录 */}
             <Route path={`${INVITE_PATH}/:token`} element={<InviteSection site={site} />} />
+            {/* 扫码签到页：二维码指向这里，填姓名 + 学号即可（当前为空实现） */}
+            <Route path={`${CHECKIN_PATH}/:stage`} element={<CheckinSection site={site} />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         )}

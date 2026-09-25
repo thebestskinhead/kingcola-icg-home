@@ -1,27 +1,37 @@
 import {
-  APPLICATION_STAGES,
-  APPLICATION_STAGE_LABELS,
-  APPLICATION_STATUS_META,
-  applicationStageIndex,
-  applicationToneOf,
+  applicationLabel,
+  applicationTone,
+  isApplicationFinished,
+  RECRUIT_STAGES,
+  RECRUIT_STAGE_LABELS,
+  stageIndex,
+  type RecruitTone,
 } from '@shared/recruit'
+import type { RecruitSchedule } from '@/api/endpoints'
 import type { Application } from '@shared/types'
 import { cn } from '@/lib/utils'
-import { ArrowRight, Check, CircleDot, Clock, X } from 'lucide-react'
+import { ArrowRight, CalendarClock, Check, CircleDot, MapPin, X } from 'lucide-react'
 
-/** `2026-09-28T14:00` 或 ISO 串 → 「2026-09-28 14:00」 */
+/** ISO 或北京时间字符串 → 展示用（统一按北京时间口径解） */
 function formatMoment(value: string): string {
   const raw = (value ?? '').trim()
   if (!raw) return ''
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2}))?/.exec(raw)
+  if (match) {
+    const [, y, m, d, h, min] = match
+    return h ? `${y}-${m}-${d} ${h}:${min}` : `${y}-${m}-${d}`
+  }
   const parsed = new Date(raw)
   if (Number.isNaN(parsed.getTime())) return raw
+  // 入库的 ISO（审计时间等）按 UTC+8 展示
+  const shifted = new Date(parsed.getTime() + 8 * 3600 * 1000)
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(
-    parsed.getHours(),
-  )}:${pad(parsed.getMinutes())}`
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(
+    shifted.getUTCDate(),
+  )} ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`
 }
 
-const TONE_STYLES: Record<string, string> = {
+const TONE_STYLES: Record<RecruitTone, string> = {
   pending: 'bg-secondary text-foreground',
   active: 'bg-accent/15 text-accent',
   passed: 'bg-emerald-500/10 text-emerald-700',
@@ -29,27 +39,63 @@ const TONE_STYLES: Record<string, string> = {
   failed: 'bg-destructive/10 text-destructive',
 }
 
+/** 各阶段的签到时间（学生自己做过的事，可以给他看） */
+function checkinAtOf(application: Application, stage: string): string {
+  if (stage === 'written') return application.writtenCheckinAt
+  if (stage === 'interview') return application.interviewCheckinAt
+  if (stage === 'defense') return application.defenseCheckinAt
+  return ''
+}
+
 /**
- * 报名进度：五段式进度条 + 当前状态 + 时间线。
- * 状态的中文名与阶段划分全部来自 `@shared/recruit`，前台不重复维护一份。
+ * 报名进度：五段进度条 + 当前状态 + 本轮安排 + 我的时间线。
+ *
+ * 状态的中文名与阶段划分全部来自 `@shared/recruit`，前台不重复维护一份；
+ * 笔试/面试的时间地点属于**本轮全局安排**，从接口的 `schedule` 里取。
  */
 export function ApplicationProgress({
   application,
+  schedule,
   inviteUrl,
 }: {
   application: Application
+  schedule: RecruitSchedule
   /** 已发出邀请函时的确认页地址 */
   inviteUrl?: string
 }) {
-  const meta = APPLICATION_STATUS_META[application.status]
-  const tone = applicationToneOf(application.status)
-  const currentStage = applicationStageIndex(application.status)
+  const tone = applicationTone(application.stage, application.result)
+  const label = applicationLabel(application.stage, application.result)
+  const currentStage = stageIndex(application.stage)
+  const finished = isApplicationFinished(application.stage, application.result)
   const failed = tone === 'failed'
+
+  /** 当前阶段的安排：告诉他下一步的时间地点 */
+  const upcoming = (() => {
+    switch (application.stage) {
+      case 'written':
+        return { title: '笔试安排', at: schedule.writtenAt, place: schedule.writtenPlace }
+      case 'interview':
+        return { title: '面试安排', at: schedule.interviewAt, place: schedule.interviewPlace }
+      case 'defense':
+        return {
+          title: '预备期',
+          at: [schedule.defenseStart, schedule.defenseEnd].filter(Boolean).join(' ~ '),
+          place: '',
+        }
+      case 'onboard':
+        return application.result === ''
+          ? { title: '确认邀请截止', at: schedule.onboardDeadline, place: '' }
+          : { title: '', at: '', place: '' }
+      default:
+        return { title: '', at: '', place: '' }
+    }
+  })()
 
   const timeline = [
     { label: '提交报名', value: application.createdAt ?? '' },
-    { label: '笔试安排', value: application.writtenAt },
-    { label: '面试安排', value: application.interviewAt },
+    { label: '笔试签到', value: application.writtenCheckinAt },
+    { label: '面试签到', value: application.interviewCheckinAt },
+    { label: '答辩签到', value: application.defenseCheckinAt },
     { label: '邀请函发出', value: application.invitedAt },
     { label: '确认加入', value: application.confirmedAt },
   ].filter((item) => item.value.trim())
@@ -69,25 +115,41 @@ export function ApplicationProgress({
           <span
             className={cn(
               'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium',
-              TONE_STYLES[tone] ?? TONE_STYLES.pending,
+              TONE_STYLES[tone],
             )}
           >
             {failed ? <X className="h-3.5 w-3.5" /> : <CircleDot className="h-3.5 w-3.5" />}
-            {meta.label}
+            {label}
           </span>
           <span className="text-xs text-muted-foreground">
             {application.name} · {application.studentId}
           </span>
         </div>
-        <p className="mt-3 text-sm leading-relaxed text-foreground/80">{meta.hint}</p>
+
+        {upcoming.at && (
+          <div className="mt-3 space-y-1 text-sm text-foreground/80">
+            <div className="flex items-center gap-2">
+              <CalendarClock className="h-4 w-4 shrink-0 text-accent" />
+              <span className="font-medium">{upcoming.title}</span>
+              <span>{upcoming.at}</span>
+            </div>
+            {upcoming.place && (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <MapPin className="h-4 w-4 shrink-0" />
+                <span>{upcoming.place}</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 五段进度 */}
-      <ol className="mt-6 space-y-0">
-        {APPLICATION_STAGES.map((stage, index) => {
+      <ol className="mt-6">
+        {RECRUIT_STAGES.map((stage, index) => {
           const stepFailed = failed && index === currentStage
           const done = index < currentStage || (index === currentStage && tone === 'passed')
           const current = index === currentStage
+          const checkin = checkinAtOf(application, stage)
           return (
             <li
               key={stage}
@@ -105,27 +167,35 @@ export function ApplicationProgress({
                         : 'bg-secondary text-muted-foreground',
                 )}
               >
-                {stepFailed ? <X className="h-3.5 w-3.5" /> : done ? <Check className="h-3.5 w-3.5" /> : index + 1}
+                {stepFailed ? (
+                  <X className="h-3.5 w-3.5" />
+                ) : done ? (
+                  <Check className="h-3.5 w-3.5" />
+                ) : (
+                  index + 1
+                )}
               </span>
               <span
                 className={cn(
-                  'text-sm',
+                  'flex flex-wrap items-baseline gap-2 text-sm',
                   current ? 'font-medium' : done ? 'text-foreground/75' : 'text-muted-foreground',
                 )}
               >
-                {APPLICATION_STAGE_LABELS[stage]}
+                {RECRUIT_STAGE_LABELS[stage]}
+                {checkin && (
+                  <span className="text-xs text-emerald-700">已签到 {formatMoment(checkin)}</span>
+                )}
               </span>
             </li>
           )
         })}
       </ol>
 
-      {/* 时间线 */}
+      {/* 我的时间线 */}
       {timeline.length > 0 && (
         <div className="mt-6 space-y-2 text-xs text-muted-foreground">
           {timeline.map((item) => (
             <div key={item.label} className="flex items-center gap-2">
-              <Clock className="h-3.5 w-3.5 shrink-0" />
               <span className="w-20 shrink-0">{item.label}</span>
               <span className="text-foreground/75">{formatMoment(item.value)}</span>
             </div>
@@ -144,9 +214,11 @@ export function ApplicationProgress({
       )}
 
       <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-        {tone === 'failed'
-          ? '本次招新到这里就结束了。感谢你的参与，欢迎关注我们后续的公开活动。'
-          : '进度会随笔试、面试、预备期的推进自动更新，重要的安排会同时发到你的邮箱。'}
+        {finished
+          ? tone === 'done'
+            ? '欢迎加入工作室！后续通知会发到你的邮箱。'
+            : '本次招新到这里就结束了。感谢你的参与，欢迎关注我们后续的公开活动。'
+          : '进度会随笔试、面试、答辩的推进自动更新，重要的安排会同时发到你的邮箱。'}
       </p>
     </div>
   )

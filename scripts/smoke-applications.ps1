@@ -1,14 +1,17 @@
 # ============================================================================
-# 招新报名链路自检（需要本地服务已在 8787 运行：npm run local / npm run dev:api）
+# 招新系统自检（需要本地服务已在 8787 运行：npm run local / npm run dev:api）
 #
 # 覆盖：
-#   1) 报名学生会话 → 提交报名表（multipart + 文件头校验 + 落 R2 + 落库）
-#   2) 重复提交、伪造文件、字段非法等拒绝路径
+#   1) 周期配置：时间窗决定报名通道开闭（未开始 / 报名中 / 已结束）
+#   2) 学生提交报名表（multipart + 文件头校验 + 落对象存储 + 落库）
 #   3) 报名表私有性：匿名与学生本人都拿不到，只有管理员能下载
-#   4) 状态机全流程：submitted → 笔试 → 面试 → 预备期 → 邀请函 → 转正写成员表
-#   5) 非法流转被拒、邮件触发（当前 SMTP 为空实现，结果码如实返回）
-#   6) 后台下载报名表、删除记录并清理 R2
+#   4) 扫码签到：填姓名 + 学号即签到（空实现），签到后状态变「已参加」
+#   5) 自动流程（预览 → 执行）：缺考标记、按成绩生成面试名单、
+#      面试录取、答辩通过 → 每一步都验证状态与发信日志
+#   6) 邀请函确认 → 写入成员表
+#   7) 名单导出、看板统计、关闭本届（导出存档 → 清空数据 → 归档）
 #
+# 脚本会**先备份再复原**招新周期配置，跑完不会把你的线上设置改掉。
 # 含中文，必须用 pwsh（PowerShell 7）运行：
 #   pwsh -NoProfile -File scripts/smoke-applications.ps1
 # ============================================================================
@@ -30,12 +33,11 @@ function Check([string]$label, [bool]$ok, [string]$extra = '') {
     }
 }
 
-# 管理员用 cookie jar（-b），学生用现造的 Token（Cookie 头）—— 两者互不影响
 function Api([string]$method, [string]$path, $body = $null, [string]$jar = '', [string]$cookie = '') {
     $cargs = @('-s', '-X', $method, "$Base$path", '-H', 'content-type: application/json')
     if ($jar) { $cargs += @('-b', $jar) }
     if ($cookie) { $cargs += @('-H', "Cookie: $cookie") }
-    if ($null -ne $body) { $cargs += @('--data-raw', ($body | ConvertTo-Json -Depth 6 -Compress)) }
+    if ($null -ne $body) { $cargs += @('--data-raw', ($body | ConvertTo-Json -Depth 8 -Compress)) }
     $raw = & curl.exe @cargs
     try { return $raw | ConvertFrom-Json } catch { return [pscustomobject]@{ ok = $false; raw = $raw } }
 }
@@ -47,7 +49,7 @@ function RawStatus([string]$method, [string]$path, [string]$jar = '', [string]$c
     return (& curl.exe @cargs)
 }
 
-# 报名学生会话令牌：与 worker/lib/crypto.ts 的 signToken 同构（base64url(json).base64url(hmac)）
+# 报名学生会话令牌：与 worker/lib/crypto.ts 的 signToken 同构
 function New-StudentToken([string]$secret, [string]$studentId, [string]$name) {
     $exp = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 3600
     $json = @{ sub = $studentId; name = $name; sid = 'smoke-cli'; exp = $exp } | ConvertTo-Json -Compress
@@ -57,148 +59,206 @@ function New-StudentToken([string]$secret, [string]$studentId, [string]$name) {
     return "$body.$sig"
 }
 
-# ---- 准备：密钥、临时文件 ----
-$devVars = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) '.dev.vars') -Encoding UTF8
-$studentSecret = ($devVars | Where-Object { $_ -match '^STUDENT_SESSION_SECRET=' }) -replace '^STUDENT_SESSION_SECRET=', ''
-$studentId = 'SMOKE' + (Get-Random -Minimum 100000 -Maximum 999999)
-$studentCookie = 'kc_student=' + (New-StudentToken $studentSecret $studentId '冒烟同学')
+# 北京时间字符串（脚本里所有时间窗都按这个口径给）
+function Cn([int]$addMinutes) {
+    $t = (Get-Date).ToUniversalTime().AddMinutes($addMinutes + 480)
+    return $t.ToString('yyyy-MM-ddTHH:mm')
+}
 
-$work = Join-Path $env:TEMP ("kc-apply-" + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+# ---- 准备 ----
+$root = Split-Path -Parent $PSScriptRoot
+$devVars = Get-Content (Join-Path $root '.dev.vars') -Encoding UTF8
+$studentSecret = ($devVars | Where-Object { $_ -match '^STUDENT_SESSION_SECRET=' }) -replace '^STUDENT_SESSION_SECRET=', ''
+
+$work = Join-Path $env:TEMP ("kc-recruit-" + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $jar = Join-Path $work 'admin.jar'
 $pdfPath = Join-Path $work 'report.pdf'
 [IO.File]::WriteAllBytes($pdfPath, [byte[]](0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x34, 0x0A, 0x25, 0x25, 0x45, 0x4F, 0x46))
-$fakePdf = Join-Path $work 'fake.pdf'
-[IO.File]::WriteAllText($fakePdf, 'this is not a real pdf')
 
-Write-Host "招新报名自检 → $Base`n" -ForegroundColor Cyan
+$stamp = Get-Random -Minimum 100000 -Maximum 999999
+$students = @(
+    @{ key = 'a'; id = "SMA$stamp"; name = '冒烟甲'; score = '90'; token = '' },
+    @{ key = 'b'; id = "SMB$stamp"; name = '冒烟乙'; score = '40'; token = '' },
+    @{ key = 'c'; id = "SMC$stamp"; name = '冒烟丙'; score = ''; token = '' }
+)
+foreach ($s in $students) {
+    $s.token = 'kc_student=' + (New-StudentToken $studentSecret $s.id $s.name)
+}
 
-$appId = ''
-$memberId = ''
-$recruitWasOpen = $null
+$appIds = @{}
+$inviteUrl = ''
+$originalCycle = $null
+
+Write-Host "招新系统自检 → $Base`n" -ForegroundColor Cyan
+Write-Host "测试学号：$($students.id -join ' / ')`n" -ForegroundColor DarkGray
 
 try {
-    # ===== 0. 服务与报名开关 =====
-    Write-Host '0) 服务与报名开关'
-    $health = Api 'GET' '/api/health'
-    Check '健康检查可用' ($health.ok -eq $true)
-
-    $site = (Api 'GET' '/api/public/site-config').data
-    $recruitWasOpen = [bool]$site.recruitOpen
-
-    # ===== 1. 管理员登录 =====
-    Write-Host "`n1) 管理员登录"
+    # ===== 0. 服务与管理员登录 =====
+    Write-Host '0) 服务与登录'
+    Check '健康检查可用' ((Api 'GET' '/api/health').ok -eq $true)
     & curl.exe -s -c $jar -o NUL -X POST "$Base/api/admin/login" -H 'content-type: application/json' --data-raw '{"username":"admin","password":"kingcola-dev-2026"}'
     Check '管理员登录成功' ((RawStatus 'GET' '/api/admin/me' $jar) -eq '200')
 
-    if (-not $recruitWasOpen) {
-        Write-Host '   报名通道当前关闭，临时打开（结束时还原）' -ForegroundColor Yellow
-        $null = Api 'PUT' '/api/admin/config' @{ site = @{ recruitOpen = $true } } $jar
+    $originalCycle = (Api 'GET' '/api/admin/recruit' $null $jar).data.cycle
+
+    # ===== 1. 周期：未开始时报名通道关闭 =====
+    Write-Host "`n1) 招新周期"
+    $null = Api 'PUT' '/api/admin/recruit' @{ cycle = @{
+        name = '冒烟测试招新'
+        applyStart = (Cn 120); applyEnd = (Cn 180)
+        writtenAt = (Cn 240); writtenEnd = (Cn 300)
+        absentGraceHours = 0; advanceRule = 'top'; advanceTop = 1
+        interviewAt = (Cn 360); defenseStart = (Cn 480); defenseEnd = (Cn 3000); onboardDeadline = (Cn 4000)
+        forceClosed = $false; closedAt = ''
+    } } $jar
+    $status = (Api 'GET' '/api/public/recruit').data
+    Check '未到开始时间 → phase=upcoming 且报名关闭' ($status.phase -eq 'upcoming' -and $status.applyOpen -eq $false) $status.phase
+    Check '未开始时不接受报名（403）' ((& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications" -H "Cookie: $($students[0].token)" -F "file=@$pdfPath;type=application/pdf" -F 'email=a@b.com' -F 'phone=13800000000' -F 'qq=123456') -eq '403')
+
+    # 切到「报名进行中」
+    $null = Api 'PUT' '/api/admin/recruit' @{ cycle = @{ applyStart = (Cn -60); applyEnd = (Cn 60); writtenEnd = (Cn -30) } } $jar
+    $status = (Api 'GET' '/api/public/recruit').data
+    Check '进入报名窗口 → phase=applying 且报名开放' ($status.phase -eq 'applying' -and $status.applyOpen -eq $true) $status.phase
+
+    # ===== 2. 提交报名表 =====
+    Write-Host "`n2) 提交报名表"
+    $badFile = Join-Path $work 'fake.pdf'
+    [IO.File]::WriteAllText($badFile, 'not a real pdf')
+    Check '伪造 PDF 被拒 415' ((& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications" -H "Cookie: $($students[0].token)" -F "file=@$badFile;type=application/pdf" -F 'email=a@b.com' -F 'phone=13800000000' -F 'qq=123456') -eq '415')
+
+    foreach ($s in $students) {
+        $raw = & curl.exe -s -X POST "$Base/api/applications" -H "Cookie: $($s.token)" -F "file=@$pdfPath;type=application/pdf" -F "email=$($s.id.ToLower())@example.edu.cn" -F 'phone=13800000000' -F 'qq=123456'
+        $created = $raw | ConvertFrom-Json
+        Check "$($s.name) 提交成功且 stage=apply/result 空" ($created.ok -eq $true -and $created.data.stage -eq 'apply' -and $created.data.result -eq '') $raw
+        $appIds[$s.key] = $created.data.id
     }
+    Check '重复提交被拒 409' ((& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications" -H "Cookie: $($students[0].token)" -F "file=@$pdfPath;type=application/pdf" -F 'email=x@b.com' -F 'phone=13800000000' -F 'qq=123456') -eq '409')
 
-    # ===== 2. 学生会话与未登录拦截 =====
-    Write-Host "`n2) 学生会话"
-    Check '未登录访问 /api/applications/me 返回 401' ((RawStatus 'GET' '/api/applications/me') -eq '401')
-    $me = Api 'GET' '/api/applications/me' $null '' $studentCookie
-    Check '登录后 /api/applications/me 返回 200 且无报名记录' ($me.ok -eq $true -and $null -eq $me.data.application)
+    # ===== 3. 报名表私有性 =====
+    Write-Host "`n3) 报名表私有性"
+    $detailA = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data
+    $fileKey = ($detailA.application.fileUrl -replace '^/api/files/', '')
+    Check '匿名访问报名表 404' ((RawStatus 'GET' "/api/files/$fileKey") -eq '404')
+    Check '学生本人也拿不到 404' ((RawStatus 'GET' "/api/files/$fileKey" '' $students[0].token) -eq '404')
+    Check '管理员专用下载口带原始文件名' (((& curl.exe -s -o NUL -D - "$Base/api/admin/applications/$($appIds['a'])/file" -b $jar) -join "`n") -match 'filename\*=UTF-8')
 
-    # ===== 3. 提交报名表 =====
-    Write-Host "`n3) 提交报名表"
-    Check '伪造 PDF（改后缀）被拒 415' ((& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications" -H "Cookie: $studentCookie" -F "file=@$fakePdf;type=application/pdf" -F 'email=a@b.com' -F 'phone=13800000000' -F 'qq=123456') -eq '415')
-    Check '手机号不合法被拒 400' ((& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications" -H "Cookie: $studentCookie" -F "file=@$pdfPath;type=application/pdf" -F 'email=a@b.com' -F 'phone=123' -F 'qq=123456') -eq '400')
-    Check '缺少 QQ 号被拒 400' ((& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications" -H "Cookie: $studentCookie" -F "file=@$pdfPath;type=application/pdf" -F 'email=a@b.com' -F 'phone=13800000000') -eq '400')
+    # ===== 3.5 确认笔试名单（发笔试邀请函） =====
+    Write-Host "`n3.5) 确认笔试名单"
+    $preview = (Api 'GET' '/api/admin/recruit/auto?task=confirm_written' $null $jar).data
+    Check '预览列出三位待确认的同学并会发笔试邀请' (
+        $preview.items.Count -eq 3 -and ($preview.items | Where-Object { $_.mail -ne 'written_invite' }).Count -eq 0
+    ) ($preview | ConvertTo-Json -Compress)
+    $run = Api 'POST' '/api/admin/recruit/auto' @{ task = 'confirm_written' } $jar
+    Check '执行后全部进入笔试阶段' ($run.ok -eq $true -and $run.data.moved -eq 3)
+    $aNow = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    Check '甲已进入笔试阶段' ($aNow.stage -eq 'written' -and $aNow.result -eq '') "$($aNow.stage)/$($aNow.result)"
 
-    $submitRaw = & curl.exe -s -X POST "$Base/api/applications" -H "Cookie: $studentCookie" -F "file=@$pdfPath;type=application/pdf" -F 'email=smoke@example.edu.cn' -F 'phone=13800000000' -F 'qq=123456'
-    $submit = $submitRaw | ConvertFrom-Json
-    Check '正常提交成功并返回 submitted' ($submit.ok -eq $true -and $submit.data.status -eq 'submitted') $submitRaw
-    $appId = $submit.data.id
-    Check '学号 / 姓名取自会话' ($submit.data.studentId -eq $studentId -and $submit.data.name -eq '冒烟同学')
-    Check '响应不包含内部字段（成绩 / 评语 / 备注）' ($submit.data.writtenScore -eq '' -and $submit.data.interviewNote -eq '' -and $submit.data.note -eq '')
+    # ===== 4. 扫码签到（空实现） =====
+    Write-Host "`n4) 扫码签到"
+    foreach ($key in @('a', 'b')) {
+        $s = $students | Where-Object { $_.key -eq $key }
+        $result = Api 'POST' '/api/applications/checkin' @{ stage = 'written'; name = $s.name; studentId = $s.id }
+        Check "$($s.name) 签到成功并转为「已参加」" ($result.ok -eq $true -and $result.data.already -eq $false)
+    }
+    $again = Api 'POST' '/api/applications/checkin' @{ stage = 'written'; name = $students[0].name; studentId = $students[0].id }
+    Check '重复签到提示已签到' ($again.ok -eq $true -and $again.data.already -eq $true)
+    $wrongName = Api 'POST' '/api/applications/checkin' @{ stage = 'written'; name = '张三'; studentId = $students[0].id }
+    Check '姓名不符被拒 403' ($wrongName.ok -eq $false)
+    $afterCheckin = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    Check '签到后 result=attended' ($afterCheckin.result -eq 'attended') $afterCheckin.result
 
-    Check '重复提交被拒 409' ((& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications" -H "Cookie: $studentCookie" -F "file=@$pdfPath;type=application/pdf" -F 'email=smoke@example.edu.cn' -F 'phone=13800000000' -F 'qq=123456') -eq '409')
+    # ===== 5. 缺考自动标记 =====
+    Write-Host "`n5) 缺考标记（自动流程）"
+    $preview = (Api 'GET' '/api/admin/recruit/auto?task=mark_absent' $null $jar).data
+    Check '预览只列出未签到的丙' ($preview.items.Count -eq 1 -and $preview.items[0].studentId -eq $students[2].id) ($preview | ConvertTo-Json -Compress)
+    $run = Api 'POST' '/api/admin/recruit/auto' @{ task = 'mark_absent' } $jar
+    Check '执行后丙被标记未参加' ($run.ok -eq $true -and $run.data.moved -eq 1)
+    $cDetail = (Api 'GET' "/api/admin/applications/$($appIds['c'])" $null $jar).data.application
+    Check '丙的结果为 absent' ($cDetail.result -eq 'absent') $cDetail.result
 
-    # ===== 4. 报名表私有性 =====
-    Write-Host "`n4) 报名表私有性"
-    $fileKey = ($submit.data.fileUrl -replace '^/api/files/', '')
-    Check '匿名访问报名表 404（不外泄）' ((RawStatus 'GET' "/api/files/$fileKey") -eq '404')
-    Check '学生本人也不能直接下载 404' ((RawStatus 'GET' "/api/files/$fileKey" '' $studentCookie) -eq '404')
-    Check '管理员可读同一路径 200' ((RawStatus 'GET' "/api/files/$fileKey" $jar) -eq '200')
-    $disposition = & curl.exe -s -o NUL -D - -X GET "$Base/api/admin/applications/$appId/file" -b $jar
-    Check '管理员专用下载接口带原始文件名' (($disposition -join "`n") -match 'filename\*=UTF-8')
+    # ===== 6. 录入成绩并生成面试名单 =====
+    Write-Host "`n6) 成绩 → 面试名单"
+    foreach ($key in @('a', 'b')) {
+        $s = $students | Where-Object { $_.key -eq $key }
+        $null = Api 'PUT' "/api/admin/applications/$($appIds[$key])" @{ writtenScore = $s.score } $jar
+    }
+    $preview = (Api 'GET' '/api/admin/recruit/auto?task=advance_written' $null $jar).data
+    $passItem = $preview.items | Where-Object { $_.applicationId -eq $appIds['a'] }
+    $failItem = $preview.items | Where-Object { $_.applicationId -eq $appIds['b'] }
+    Check '按前 1 名：甲进入面试并发面试邀请' ($passItem.targetStage -eq 'interview' -and $passItem.mail -eq 'interview_invite') ($preview | ConvertTo-Json -Compress)
+    Check '未晋级的乙发感谢信' ($failItem.targetResult -eq 'failed' -and $failItem.mail -eq 'thanks_written')
 
-    # ===== 5. 后台列表与筛选 =====
-    Write-Host "`n5) 后台列表"
-    $list = Api 'GET' "/api/admin/applications?q=$studentId" $null $jar
-    Check '按学号搜到 1 条' ($list.ok -eq $true -and $list.data.total -eq 1) ($list | ConvertTo-Json -Depth 4 -Compress)
-    Check '返回各状态计数' ($list.data.counts.submitted -ge 1)
-    Check '返回邀请链接字段（未签发时为空）' ($list.data.items[0].inviteUrl -eq '')
+    $run = Api 'POST' '/api/admin/recruit/auto' @{ task = 'advance_written' } $jar
+    Check '执行成功且报告发信结果' ($run.ok -eq $true -and $run.data.moved -eq 2) ($run.data.mail | ConvertTo-Json -Compress)
+    $aNow = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    Check '甲进入面试阶段' ($aNow.stage -eq 'interview' -and $aNow.result -eq '') "$($aNow.stage)/$($aNow.result)"
 
-    # ===== 6. 状态机 =====
-    Write-Host "`n6) 状态机"
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'interview_passed' } $jar
-    Check '跨阶段跳转被拒（submitted → interview_passed）' ($r.ok -eq $false -and $r.error.code -eq 'INVALID_TRANSITION') ($r | ConvertTo-Json -Compress)
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'nope' } $jar
-    Check '未知状态被拒' ($r.ok -eq $false -and $r.error.code -eq 'INVALID_STATUS')
+    # ===== 7. 面试录取 → 预备期 =====
+    Write-Host "`n7) 面试录取"
+    $preview = (Api 'GET' "/api/admin/recruit/auto?task=advance_interview&selected=$($appIds['a'])" $null $jar).data
+    Check '勾选甲 → 进入预备期并发面试通过通知' (
+        ($preview.items | Where-Object { $_.applicationId -eq $appIds['a'] }).mail -eq 'interview_passed'
+    ) ($preview | ConvertTo-Json -Compress)
+    $run = Api 'POST' '/api/admin/recruit/auto' @{ task = 'advance_interview'; selectedIds = @($appIds['a']) } $jar
+    Check '面试录取执行成功' ($run.ok -eq $true)
+    $aNow = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    Check '甲进入答辩（预备期）阶段' ($aNow.stage -eq 'defense') $aNow.stage
 
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'written_scheduled'; writtenAt = '2026-10-08T14:00'; writtenNote = '实验楼 B203 机房' } $jar
-    Check 'submitted → written_scheduled' ($r.ok -eq $true -and $r.data.application.status -eq 'written_scheduled')
-    # 邮件默认关闭：发信失败不影响状态流转，只如实回报原因码
-    Check '触发笔试邀请并如实回报邮件结果' ($null -ne $r.data.mail -and $r.data.mail.kind -eq 'written_invite' -and $r.data.mail.sent -eq $false -and $r.data.mail.code -eq 'NOT_CONFIGURED') ($r.data.mail | ConvertTo-Json -Compress)
+    # ===== 8. 答辩通过 → 转正 + 邀请函 =====
+    Write-Host "`n8) 答辩通过转正"
+    $run = Api 'POST' '/api/admin/recruit/auto' @{ task = 'advance_defense'; selectedIds = @($appIds['a']) } $jar
+    Check '答辩通过执行成功' ($run.ok -eq $true) ($run | ConvertTo-Json -Depth 4 -Compress)
+    $aNow = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    Check '甲进入转正阶段并签发邀请函' ($aNow.stage -eq 'onboard' -and $aNow.inviteUrl -like '*/invite/*') $aNow.inviteUrl
+    $inviteUrl = $aNow.inviteUrl
+    $token = ($inviteUrl -split '/invite/')[-1]
 
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'written_failed'; writtenScore = '42' } $jar
-    Check 'written_scheduled → written_failed' ($r.ok -eq $true -and $r.data.application.status -eq 'written_failed')
-    Check '触发感谢信（笔试）' ($r.data.mail.kind -eq 'thanks_written')
-
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'written_passed' } $jar
-    Check '未通过可改判为通过' ($r.ok -eq $true -and $r.data.application.status -eq 'written_passed')
-    Check '改判不发邮件（避免误发邀请）' ($null -eq $r.data.mail)
-
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'interview_scheduled'; interviewAt = '2026-10-12T19:00'; interviewNote = '实验楼 B203 会议室' } $jar
-    Check 'written_passed → interview_scheduled' ($r.ok -eq $true -and $r.data.mail.kind -eq 'interview_invite')
-
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'interview_passed' } $jar
-    Check 'interview_scheduled → interview_passed' ($r.ok -eq $true)
-
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'probation'; probationNote = '参与官网改版' } $jar
-    Check 'interview_passed → probation' ($r.ok -eq $true)
-
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'invited' } $jar
-    Check 'probation → invited 并签发邀请凭证' ($r.ok -eq $true -and $r.data.application.inviteUrl -like '*/invite/*') ($r.data.application.inviteUrl)
-    $token = ($r.data.application.inviteUrl -split '/invite/')[-1]
-
-    $r = Api 'PUT' "/api/admin/applications/$appId" @{ status = 'invited'; notice = 'offer' } $jar
-    Check '可对已发出的邀请函补发邮件（notice=offer）' ($r.ok -eq $true -and $r.data.mail.kind -eq 'offer')
-
-    # ===== 7. 邀请函确认 → 写入成员表 =====
-    Write-Host "`n7) 邀请函确认"
-    $invite = Api 'GET' "/api/applications/invite/$token"
-    Check '邀请函可匿名打开（凭证即密权）' ($invite.ok -eq $true -and $invite.data.name -eq '冒烟同学')
-    Check '未知凭证 404' ((RawStatus 'GET' '/api/applications/invite/not-a-real-token') -eq '404')
-
+    # ===== 9. 邀请函确认 → 成员表 =====
+    Write-Host "`n9) 邀请函确认"
+    $invite = (Api 'GET' "/api/applications/invite/$token").data
+    Check '邀请函可匿名打开' ($invite.alreadyMember -eq $false -and $invite.name -eq $students[0].name)
     $confirm = Api 'POST' "/api/applications/invite/$token" @{ title = '前端开发'; direction = 'Web 前端'; bio = '冒烟测试账号' }
-    Check '确认加入成功并返回成员 id' ($confirm.ok -eq $true -and [bool]$confirm.data.memberId) ($confirm | ConvertTo-Json -Compress)
+    Check '确认加入成功并返回成员 id' ($confirm.ok -eq $true -and [bool]$confirm.data.memberId)
     $memberId = [string]$confirm.data.memberId
+    Check '同一链接不能重复确认' ((Api 'POST' "/api/applications/invite/$token" @{ title = '前端开发' }).ok -eq $false)
+    $aNow = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    Check '甲成为正式成员' ($aNow.stage -eq 'onboard' -and $aNow.result -eq 'passed' -and $aNow.memberId -eq $memberId)
 
-    $again = Api 'POST' "/api/applications/invite/$token" @{ title = '前端开发' }
-    Check '同一链接不能重复确认 409' ($again.ok -eq $false)
-    Check '学生端进度已变为 member' ((Api 'GET' '/api/applications/me' $null '' $studentCookie).data.application.status -eq 'member')
+    # ===== 10. 看板 / 导出 / 发信日志 =====
+    Write-Host "`n10) 看板、导出与日志"
+    $board = (Api 'GET' '/api/admin/recruit/board' $null $jar).data
+    Check '看板：3 人报名、1 人转正' ($board.total -eq 3 -and $board.members -eq 1) ($board | ConvertTo-Json -Compress)
+    # funnel 只统计「未结束」的记录：已转正属于终态，所以不在池里，但在状态细分里
+    Check '看板：状态细分里有 1 位正式成员' ($board.byLabel.'正式成员' -eq 1) ($board.byLabel | ConvertTo-Json -Compress)
+    $csv = & curl.exe -s "$Base/api/admin/recruit/export" -b $jar
+    Check '导出 CSV 含三位同学与表头' ($csv -match '姓名' -and $csv -match $students[0].name -and $csv -match $students[2].name)
+    $mails = (Api 'GET' '/api/admin/recruit/mails' $null $jar).data.logs
+    Check '发信日志记录了各阶段通知' (
+        ($mails | Where-Object { $_.kind -eq 'interview_invite' }).Count -ge 1 -and
+        ($mails | Where-Object { $_.kind -eq 'thanks_written' }).Count -ge 1 -and
+        ($mails | Where-Object { $_.kind -eq 'offer' }).Count -ge 1
+    )
 
-    # 公开内容接口直接返回数组（不是 {items}）
-    $members = Api 'GET' '/api/public/content/members'
-    Check '成员表已出现该同学（前台已可见）' (($members.data | Where-Object { $_.id -eq $memberId }).Count -eq 1)
-    Check '正式成员为终态，不可再流转' ((Api 'PUT' "/api/admin/applications/$appId" @{ status = 'submitted' } $jar).error.code -eq 'INVALID_TRANSITION')
+    # ===== 11. 关闭本届 =====
+    Write-Host "`n11) 关闭本届"
+    $run = Api 'POST' '/api/admin/recruit/auto' @{ task = 'close_cycle'; force = $true } $jar
+    Check '关闭成功并生成存档' ($run.ok -eq $true -and $run.data.archive.url -like '/api/files/*') ($run.data | ConvertTo-Json -Depth 3 -Compress)
+    $board = (Api 'GET' '/api/admin/recruit/board' $null $jar).data
+    Check '关闭后报名数据已清空' ($board.total -eq 0) "$($board.total)"
+    Check '关闭后邀请函链接失效' ((Api 'GET' "/api/applications/invite/$token" $null $null).ok -eq $false)
+    Check '关闭后学生端进度页显示未报名' ((Api 'GET' '/api/applications/me' $null '' $students[0].token).data.application -eq $null)
+    $status = (Api 'GET' '/api/public/recruit').data
+    Check '关闭后报名通道关闭（phase=closed）' ($status.phase -eq 'closed' -and $status.applyOpen -eq $false) $status.phase
 
-    # ===== 8. 清理 =====
-    Write-Host "`n8) 清理"
-    Check '删除成员记录' ((Api 'DELETE' "/api/admin/content/members/$memberId" $null $jar).ok -eq $true)
-    Check '删除报名记录' ((Api 'DELETE' "/api/admin/applications/$appId" $null $jar).ok -eq $true)
-    Check '记录已删除（列表查不到）' ((Api 'GET' "/api/admin/applications?q=$studentId" $null $jar).data.total -eq 0)
-    Check '报名表 R2 文件已一并清理' ((RawStatus 'GET' "/api/files/$fileKey" $jar) -eq '404')
+    # 清理成员表里这位同学
+    $null = Api 'DELETE' "/api/admin/content/members/$memberId" $null $jar
 }
 finally {
-    if ($recruitWasOpen -eq $false) {
-        $null = Api 'PUT' '/api/admin/config' @{ site = @{ recruitOpen = $false } } $jar
-        Write-Host '  已还原报名通道为关闭' -ForegroundColor Yellow
+    # 复原招新周期配置（脚本开头备份过）
+    if ($null -ne $originalCycle) {
+        $null = Api 'PUT' '/api/admin/recruit' @{ cycle = $originalCycle } $jar
+        Write-Host '  已复原原有的招新周期配置' -ForegroundColor Yellow
     }
     Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 }

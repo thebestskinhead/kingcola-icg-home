@@ -1,21 +1,21 @@
 /**
- * 招新报名的 D1 仓储。
+ * 招新报名的 D1 仓储（含发信日志）。
  *
  * 与 `lib/repo.ts`（由 shared/resources.ts 驱动的通用 CRUD）分开：
- * applications 是「学生写、管理员读」的流水线，有自己的状态机与侧效，
- * 不适合塞进通用资源的声明式模型里，所以这里显式列出列映射。
+ * applications 是「学生写、管理员读」的流水线，状态用 stage + result 两列描述，
+ * 有自己的批量推进与清空语义，不适合塞进通用资源的声明式模型。
  *
  * 列名只来自本文件的常量表，不接受任何外部输入拼 SQL。
  */
 
-import type { Application, ApplicationStatus } from '../../shared/types'
+import type { RecruitResult, RecruitStage } from '../../shared/recruit'
+import type { Application } from '../../shared/types'
 import type { Env } from '../env'
 import { randomId } from './crypto'
 
-/** 含邀请函凭证的内部记录 —— 凭证是敏感数据，只给管理员接口用，不下发学生端 */
+/** 含邀请凭证的内部记录 —— 凭证是密权，只给管理员/发信逻辑用，不下发学生端 */
 export interface ApplicationRecord extends Application {
   inviteToken: string
-  inviteExpiresAt: string
 }
 
 /** 字段 → 列名。顺序即 SELECT 顺序，新增字段只改这里。 */
@@ -29,13 +29,18 @@ const COLUMNS: ReadonlyArray<readonly [keyof ApplicationRecord, string]> = [
   ['fileUrl', 'file_url'],
   ['fileName', 'file_name'],
   ['fileSize', 'file_size'],
-  ['status', 'status'],
-  ['writtenAt', 'written_at'],
+  ['stage', 'stage'],
+  ['result', 'result'],
+  ['stageChangedAt', 'stage_changed_at'],
+  ['writtenCheckinAt', 'written_checkin_at'],
+  ['interviewCheckinAt', 'interview_checkin_at'],
+  ['defenseCheckinAt', 'defense_checkin_at'],
   ['writtenScore', 'written_score'],
+  ['interviewScore', 'interview_score'],
+  ['defenseScore', 'defense_score'],
   ['writtenNote', 'written_note'],
-  ['interviewAt', 'interview_at'],
   ['interviewNote', 'interview_note'],
-  ['probationNote', 'probation_note'],
+  ['defenseNote', 'defense_note'],
   ['inviteToken', 'invite_token'],
   ['inviteExpiresAt', 'invite_expires_at'],
   ['invitedAt', 'invited_at'],
@@ -49,7 +54,9 @@ const COLUMNS: ReadonlyArray<readonly [keyof ApplicationRecord, string]> = [
 const COLUMN_OF = new Map<string, string>(COLUMNS.map(([key, column]) => [key, column]))
 const SELECT_LIST = COLUMNS.map(([, column]) => column).join(', ')
 
-/** 可空列统一转字符串，数值列转数字，避免前端拿到 null 又要判断一次 */
+/** 更新时不允许改的列（主键 / 学号 / 创建时间） */
+const IMMUTABLE_KEYS = new Set<string>(['id', 'studentId', 'createdAt'])
+
 function decodeValue(key: keyof ApplicationRecord, raw: unknown): unknown {
   if (key === 'fileSize') return Number(raw) || 0
   if (raw === null || raw === undefined) return ''
@@ -64,7 +71,14 @@ function rowToRecord(row: Record<string, unknown>): ApplicationRecord {
   return out as unknown as ApplicationRecord
 }
 
-/** 新建报名的入参（状态、时间戳由本文件补） */
+function encodeValue(key: string, value: unknown): unknown {
+  if (key === 'fileSize') return Number(value) || 0
+  return value === null || value === undefined ? '' : String(value)
+}
+
+// ===== 写入 =====
+
+/** 新建报名的入参（stage / result / 时间戳由本文件补） */
 export interface NewApplication {
   studentId: string
   name: string
@@ -82,8 +96,9 @@ export async function createApplication(env: Env, input: NewApplication): Promis
 
   await env.DB.prepare(
     `INSERT INTO applications
-       (id, student_id, name, email, phone, qq, file_url, file_name, file_size, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?)`,
+       (id, student_id, name, email, phone, qq, file_url, file_name, file_size,
+        stage, result, stage_changed_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'apply', '', ?, ?, ?)`,
   )
     .bind(
       id,
@@ -97,6 +112,7 @@ export async function createApplication(env: Env, input: NewApplication): Promis
       input.fileSize,
       now,
       now,
+      now,
     )
     .run()
 
@@ -105,6 +121,95 @@ export async function createApplication(env: Env, input: NewApplication): Promis
   return created
 }
 
+/**
+ * 局部更新：只写传入的字段。
+ * 键必须在 COLUMNS 白名单里，否则直接忽略（杜绝拼出任意列名）。
+ */
+export type ApplicationPatch = Partial<Omit<ApplicationRecord, 'id' | 'studentId' | 'createdAt'>>
+
+export async function updateApplication(
+  env: Env,
+  id: string,
+  patch: ApplicationPatch,
+): Promise<ApplicationRecord | null> {
+  const assignments: string[] = []
+  const binds: unknown[] = []
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (IMMUTABLE_KEYS.has(key)) continue
+    const column = COLUMN_OF.get(key)
+    if (!column || value === undefined) continue
+    assignments.push(`${column} = ?`)
+    binds.push(encodeValue(key, value))
+  }
+
+  if (assignments.length > 0) {
+    assignments.push('updated_at = ?')
+    binds.push(new Date().toISOString())
+    await env.DB.prepare(`UPDATE applications SET ${assignments.join(', ')} WHERE id = ?`)
+      .bind(...binds, id)
+      .run()
+  }
+
+  return getApplication(env, id)
+}
+
+/**
+ * 批量推进：一次改多条（生成面试名单、录取、发感谢信都靠它）。
+ * 单条 SQL 的绑定参数上限是 100，这里按 20 条一批切片，避免参数过多。
+ */
+export async function updateApplications(
+  env: Env,
+  updates: Array<{ id: string } & ApplicationPatch>,
+): Promise<number> {
+  let changed = 0
+  const now = new Date().toISOString()
+  const CHUNK = 20
+
+  for (let start = 0; start < updates.length; start += CHUNK) {
+    const chunk = updates.slice(start, start + CHUNK)
+    const statements = chunk.map((update) => {
+      const assignments: string[] = []
+      const binds: unknown[] = []
+      for (const [key, value] of Object.entries(update)) {
+        if (key === 'id' || IMMUTABLE_KEYS.has(key)) continue
+        const column = COLUMN_OF.get(key)
+        if (!column || value === undefined) continue
+        assignments.push(`${column} = ?`)
+        binds.push(encodeValue(key, value))
+      }
+      assignments.push('updated_at = ?')
+      binds.push(now)
+      binds.push(update.id)
+      return env.DB.prepare(
+        `UPDATE applications SET ${assignments.join(', ')} WHERE id = ?`,
+      ).bind(...binds)
+    })
+
+    if (statements.length > 0) {
+      await env.DB.batch(statements)
+      changed += statements.length
+    }
+  }
+
+  return changed
+}
+
+export async function deleteApplication(env: Env, id: string): Promise<boolean> {
+  const result = await env.DB.prepare('DELETE FROM applications WHERE id = ?').bind(id).run()
+  return (result.meta?.changes ?? 0) > 0
+}
+
+/** 关闭本届时清空报名数据（发信日志同生命周期，一并清掉） */
+export async function clearRecruitData(env: Env): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM applications'),
+    env.DB.prepare('DELETE FROM application_mails'),
+  ])
+}
+
+// ===== 读取 =====
+
 export async function getApplication(env: Env, id: string): Promise<ApplicationRecord | null> {
   const row = await env.DB.prepare(`SELECT ${SELECT_LIST} FROM applications WHERE id = ?`)
     .bind(id)
@@ -112,7 +217,6 @@ export async function getApplication(env: Env, id: string): Promise<ApplicationR
   return row ? rowToRecord(row) : null
 }
 
-/** 按学号取 —— 报名提交时用来判断「这位同学是不是已经报过名」 */
 export async function getApplicationByStudentId(
   env: Env,
   studentId: string,
@@ -135,68 +239,35 @@ export async function getApplicationByInviteToken(
   return row ? rowToRecord(row) : null
 }
 
-/**
- * 局部更新：只写传入的字段。
- * 键必须在 COLUMNS 白名单里，否则直接忽略（杜绝拼出任意列名）。
- */
-export async function updateApplication(
-  env: Env,
-  id: string,
-  patch: Partial<Omit<ApplicationRecord, 'id' | 'studentId' | 'createdAt'>>,
-): Promise<ApplicationRecord | null> {
-  const assignments: string[] = []
-  const binds: unknown[] = []
-
-  for (const [key, value] of Object.entries(patch)) {
-    const column = COLUMN_OF.get(key)
-    if (!column || column === 'id' || column === 'student_id' || column === 'created_at') continue
-    if (value === undefined) continue
-    assignments.push(`${column} = ?`)
-    binds.push(typeof value === 'number' ? value : String(value ?? ''))
-  }
-
-  if (assignments.length > 0) {
-    assignments.push('updated_at = ?')
-    binds.push(new Date().toISOString())
-    await env.DB.prepare(`UPDATE applications SET ${assignments.join(', ')} WHERE id = ?`)
-      .bind(...binds, id)
-      .run()
-  }
-
-  return getApplication(env, id)
-}
-
-export async function deleteApplication(env: Env, id: string): Promise<boolean> {
-  const result = await env.DB.prepare('DELETE FROM applications WHERE id = ?').bind(id).run()
-  return (result.meta?.changes ?? 0) > 0
-}
-
 export interface ListApplicationsOptions {
-  /** 状态筛选，空表示全部 */
-  statuses?: ApplicationStatus[]
+  /** 只看这些阶段 */
+  stages?: RecruitStage[]
+  /** 只看这些结果（空串表示「尚无结论」，需要显式传 ''） */
+  results?: RecruitResult[]
   search?: string
   limit?: number
   offset?: number
-}
-
-export interface ListApplicationsResult {
-  items: ApplicationRecord[]
-  total: number
 }
 
 function whereClause(options: ListApplicationsOptions): { where: string; binds: unknown[] } {
   const clauses: string[] = []
   const binds: unknown[] = []
 
-  const statuses = (options.statuses ?? []).filter(Boolean)
-  if (statuses.length > 0) {
-    clauses.push(`status IN (${statuses.map(() => '?').join(', ')})`)
-    binds.push(...statuses)
+  const stages = (options.stages ?? []).filter(Boolean)
+  if (stages.length > 0) {
+    clauses.push(`stage IN (${stages.map(() => '?').join(', ')})`)
+    binds.push(...stages)
+  }
+
+  const results = options.results
+  if (results && results.length > 0) {
+    clauses.push(`result IN (${results.map(() => '?').join(', ')})`)
+    binds.push(...results)
   }
 
   const term = options.search?.trim()
   if (term) {
-    // 报名表里能搜的就是「人」——姓名 / 学号 / 邮箱 / 手机号 / QQ
+    // 能搜的就是「人」——姓名 / 学号 / 邮箱 / 手机号 / QQ
     const columns = ['name', 'student_id', 'email', 'phone', 'qq']
     clauses.push(`(${columns.map((c) => `${c} LIKE ?`).join(' OR ')})`)
     binds.push(...columns.map(() => `%${term}%`))
@@ -205,17 +276,22 @@ function whereClause(options: ListApplicationsOptions): { where: string; binds: 
   return { where: clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '', binds }
 }
 
+export interface ListApplicationsResult {
+  items: ApplicationRecord[]
+  total: number
+}
+
 export async function listApplications(
   env: Env,
   options: ListApplicationsOptions = {},
 ): Promise<ListApplicationsResult> {
   const { where, binds } = whereClause(options)
-  const limit = Math.min(Math.max(options.limit ?? 200, 1), 1000)
+  const limit = Math.min(Math.max(options.limit ?? 500, 1), 2000)
   const offset = Math.max(options.offset ?? 0, 0)
 
   const [rows, count] = await Promise.all([
+    // 报名时间倒序：招新期最关心的就是刚到的新报名
     env.DB
-      // 待处理的排前面，其余按报名时间倒序
       .prepare(`SELECT ${SELECT_LIST} FROM applications${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
       .bind(...binds, limit, offset)
       .all<Record<string, unknown>>(),
@@ -230,32 +306,99 @@ export async function listApplications(
   }
 }
 
-/** 按状态计数（后台列表页顶部的分状态徽章） */
-export async function countApplicationsByStatus(env: Env): Promise<Record<string, number>> {
-  const result = await env.DB.prepare('SELECT status, COUNT(*) AS n FROM applications GROUP BY status')
-    .all<{ status: string; n: number }>()
-
-  const counts: Record<string, number> = {}
-  for (const row of result.results ?? []) counts[row.status] = row.n
-  return counts
+/** 全量拉取（看板统计、CSV 导出、关闭归档用；招新量级最多几百条） */
+export async function listAllApplications(env: Env): Promise<ApplicationRecord[]> {
+  const result = await env.DB.prepare(
+    `SELECT ${SELECT_LIST} FROM applications ORDER BY created_at ASC`,
+  ).all<Record<string, unknown>>()
+  return (result.results ?? []).map(rowToRecord)
 }
+
+// ===== 发信日志 =====
+
+export interface MailLogEntry {
+  applicationId: string
+  kind: string
+  recipient: string
+  subject: string
+  ok: boolean
+  code: string
+  message: string
+  actor: string
+}
+
+export async function writeMailLog(env: Env, entry: MailLogEntry): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO application_mails
+       (id, application_id, kind, recipient, subject, ok, code, message, actor, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      randomId('mail'),
+      entry.applicationId,
+      entry.kind,
+      entry.recipient,
+      entry.subject,
+      entry.ok ? 1 : 0,
+      entry.code,
+      entry.message.slice(0, 500),
+      entry.actor,
+      new Date().toISOString(),
+    )
+    .run()
+}
+
+export interface MailLogRow extends MailLogEntry {
+  id: string
+  createdAt: string
+}
+
+export async function listMailLogs(
+  env: Env,
+  options: { applicationId?: string; limit?: number } = {},
+): Promise<MailLogRow[]> {
+  const limit = Math.min(Math.max(options.limit ?? 200, 1), 1000)
+  const where = options.applicationId ? ' WHERE application_id = ?' : ''
+  const statement = env.DB.prepare(
+    `SELECT id, application_id, kind, recipient, subject, ok, code, message, actor, created_at
+       FROM application_mails${where} ORDER BY created_at DESC LIMIT ?`,
+  )
+  const result = options.applicationId
+    ? await statement.bind(options.applicationId, limit).all<Record<string, unknown>>()
+    : await statement.bind(limit).all<Record<string, unknown>>()
+
+  return (result.results ?? []).map((row) => ({
+    id: String(row.id ?? ''),
+    applicationId: String(row.application_id ?? ''),
+    kind: String(row.kind ?? ''),
+    recipient: String(row.recipient ?? ''),
+    subject: String(row.subject ?? ''),
+    ok: Number(row.ok ?? 0) === 1,
+    code: String(row.code ?? ''),
+    message: String(row.message ?? ''),
+    actor: String(row.actor ?? ''),
+    createdAt: String(row.created_at ?? ''),
+  }))
+}
+
+// ===== 学生可见视图 =====
 
 /**
  * 给报名同学本人看的视图：
  * - 隐去邀请凭证（那是邮件里的密权）与管理员备注；
- * - 隐去笔试成绩、面试评语、预备期评语 —— 这些是内部评审记录，不对本人展示；
- * - 保留各阶段的时间（笔试 / 面试安排要让他知道）。
+ * - 隐去笔试 / 面试 / 答辩成绩与评语 —— 这些是内部评审记录，不对本人展示；
+ * - 保留各阶段时间与签到情况（他自己做过的事）。
  */
 export function toStudentView(record: ApplicationRecord): Application {
-  // 直接展开即可 —— 多余的 inviteToken / inviteExpiresAt 会落在 Application 之外，
-  // 不会随响应下发（对象展开不做多余属性检查）
   const view: Application = { ...record }
   return {
     ...view,
     writtenScore: '',
+    interviewScore: '',
+    defenseScore: '',
     writtenNote: '',
     interviewNote: '',
-    probationNote: '',
+    defenseNote: '',
     note: '',
   }
 }

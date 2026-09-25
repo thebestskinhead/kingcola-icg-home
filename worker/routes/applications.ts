@@ -1,25 +1,35 @@
 /**
- * 招新报名的**学生侧**接口。
+ * 招新报名的**学生侧**接口 + 公开的周期状态。
  *
+ *   GET  /api/public/recruit               本轮招新的时间窗与文案（报名页据此显隐表单）
  *   POST /api/applications                 提交报名表（需报名学生会话，multipart）
  *   GET  /api/applications/me              查看自己的报名进度
  *   GET  /api/applications/invite/:token   打开邀请函（凭证即密权，无需登录）
  *   POST /api/applications/invite/:token   确认加入，写入成员表
+ *   POST /api/applications/checkin         扫码签到（当前空实现：填姓名 + 学号即可）
  *
  * 身份由教务网登录后的 `kc_student` 会话背书 —— 学号与姓名一律取自会话，
- * 不接受客户端传入，避免有人替别人报名。
- *
- * 报名表文件：类型按**文件头魔数**判定（不信扩展名/MIME），存进 R2 的
- * `applications/` 前缀；该前缀在 `GET /api/files/*` 被拦住，只有管理员能下载。
+ * 不接受客户端传入，避免有人替别人报名。**签到例外**：签到页是线下扫码打开的，
+ * 同学手上不一定有登录态，所以按「姓名 + 学号与报名记录一致」放行（这是刻意的空实现）。
  */
 
 import { RESOURCES, formatLimit } from '../../shared/resources'
 import {
   APPLICATION_DOC_LIMIT,
   APPLICATION_DOC_SCOPE,
+  checkinEligibility,
+  isApplyOpen,
+  isCheckinStage,
   isInviteUsable,
+  normalizeName,
+  recruitNotice,
+  recruitPhase,
   validateApplicationForm,
+  validateCheckin,
+  type CheckinStage,
+  type RecruitResult,
 } from '../../shared/recruit'
+import { cnTimeToText } from '../../shared/time'
 import { MEMBER_ROLES, type Application } from '../../shared/types'
 import {
   createApplication,
@@ -29,12 +39,26 @@ import {
   updateApplication,
 } from '../lib/applications'
 import { clientIp, fail, ok, readJsonBody } from '../lib/http'
+import { getRecruitSettings } from '../lib/recruit-config'
 import { createEntity, getSiteConfig, writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
 import { getStorage, storageReady } from '../lib/storage'
 import { buildObjectKey, sniffDocument } from '../lib/uploads'
 
-/** 取会话里的身份；路由已保证 auth: 'student'，这里只做兜底 */
+/** 签到时间写入哪一列 */
+const CHECKIN_COLUMN: Record<CheckinStage, 'writtenCheckinAt' | 'interviewCheckinAt' | 'defenseCheckinAt'> = {
+  written: 'writtenCheckinAt',
+  interview: 'interviewCheckinAt',
+  defense: 'defenseCheckinAt',
+}
+
+/** 该阶段在流程里对应第几段，签到「人到了就推进阶段」时用 */
+const CHECKIN_STAGE_MAP = {
+  written: 'written',
+  interview: 'interview',
+  defense: 'defense',
+} as const
+
 function identityOf(ctx: RequestContext): { studentId: string; name: string } | null {
   const student = ctx.student
   if (!student?.sub) return null
@@ -45,15 +69,43 @@ function requestMeta(ctx: RequestContext) {
   return { ip: clientIp(ctx.request), ua: ctx.request.headers.get('user-agent') ?? '' }
 }
 
+// ===== 公开：本届招新状态 =====
+
+/**
+ * 报名页要用到的全部时间信息。刻意不带邮件模板等内容 —— 那是管理端数据。
+ * 与 bootstrap 一样可被短缓存（30 秒），招新状态变化本来就不频繁。
+ */
+export async function getRecruitStatus(ctx: RequestContext): Promise<Response> {
+  const settings = await getRecruitSettings(ctx.env)
+  const { cycle } = settings
+  const phase = recruitPhase(cycle)
+
+  return ok(
+    {
+      phase,
+      name: cycle.name,
+      applyStart: cycle.applyStart,
+      applyEnd: cycle.applyEnd,
+      applyStartText: cnTimeToText(cycle.applyStart),
+      applyEndText: cnTimeToText(cycle.applyEnd),
+      /** 报名通道是否开放 */
+      applyOpen: isApplyOpen(cycle),
+      /** 给「加入我们」页面的说明 */
+      notice: recruitNotice(cycle),
+    },
+    { headers: { 'cache-control': 'public, max-age=30' } },
+  )
+}
+
 // ===== 提交报名表 =====
 
 export async function submitApplication(ctx: RequestContext): Promise<Response> {
   const me = identityOf(ctx)
   if (!me) return fail(401, 'UNAUTHENTICATED', '登录状态已失效，请重新用教务网账号登录')
 
-  const site = await getSiteConfig(ctx.env)
-  if (!site.recruitOpen) {
-    return fail(403, 'RECRUIT_CLOSED', '当前不在招新期，报名通道已关闭')
+  const settings = await getRecruitSettings(ctx.env)
+  if (!isApplyOpen(settings.cycle)) {
+    return fail(403, 'RECRUIT_CLOSED', recruitNotice(settings.cycle))
   }
 
   // 报名表目标桶在后台「对象存储」页单独配置，可与站点图片分属不同服务商
@@ -105,7 +157,7 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
     return fail(415, 'UNSUPPORTED_TYPE', '仅支持 .pdf 或 .docx 文件')
   }
 
-  // 只读文件头 16 字节做类型判定，整份内容以 Blob 直接交给 R2
+  // 只读文件头 16 字节做类型判定，整份内容以 Blob 直接交给对象存储
   const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
   const kind = sniffDocument(head, filename)
   if (!kind) {
@@ -130,7 +182,6 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
   } catch (error) {
     // 落库失败就把刚上传的文件删掉，不留孤儿
     await storage.delete(key).catch(() => {})
-    // 并发下可能撞上 UNIQUE(student_id)
     if (await getApplicationByStudentId(ctx.env, me.studentId)) {
       return fail(409, 'ALREADY_APPLIED', '你已经提交过报名表，可在本页查看当前进度')
     }
@@ -156,20 +207,40 @@ export async function myApplication(ctx: RequestContext): Promise<Response> {
   const me = identityOf(ctx)
   if (!me) return fail(401, 'UNAUTHENTICATED', '未登录')
 
-  const record = await getApplicationByStudentId(ctx.env, me.studentId)
+  const [settings, record] = await Promise.all([
+    getRecruitSettings(ctx.env),
+    getApplicationByStudentId(ctx.env, me.studentId),
+  ])
+
+  const cycle = settings.cycle
+  const base = {
+    phase: recruitPhase(cycle),
+    cycleName: cycle.name,
+    notice: recruitNotice(cycle),
+    /** 各阶段的安排时间，进度页上要展示给同学 */
+    schedule: {
+      writtenAt: cnTimeToText(cycle.writtenAt),
+      writtenPlace: cycle.writtenPlace,
+      interviewAt: cnTimeToText(cycle.interviewAt),
+      interviewPlace: cycle.interviewPlace,
+      defenseStart: cnTimeToText(cycle.defenseStart),
+      defenseEnd: cnTimeToText(cycle.defenseEnd),
+      onboardDeadline: cnTimeToText(cycle.onboardDeadline),
+    },
+  }
+
   if (!record) {
-    return ok({ application: null }, { headers: { 'cache-control': 'no-store' } })
+    return ok({ ...base, application: null }, { headers: { 'cache-control': 'no-store' } })
   }
 
   // 已发出邀请函时顺带把确认页地址给他 —— 同学常常翻不到那封邮件，
   // 而这是他本人的记录，本人看自己的邀请链接没有额外暴露。
-  const inviteUrl =
-    record.status === 'invited' && isInviteUsable(record.inviteExpiresAt, record.status)
-      ? `/invite/${record.inviteToken}`
-      : ''
+  const inviteUrl = isInviteUsable(record.inviteExpiresAt, record.stage, record.result)
+    ? `/invite/${record.inviteToken}`
+    : ''
 
   return ok(
-    { application: toStudentView(record) as Application, inviteUrl },
+    { ...base, application: toStudentView(record) as Application, inviteUrl },
     { headers: { 'cache-control': 'no-store' } },
   )
 }
@@ -180,7 +251,7 @@ export async function getInvite(ctx: RequestContext): Promise<Response> {
   const record = await getApplicationByInviteToken(ctx.env, ctx.params.token)
   if (!record) return fail(404, 'INVITE_NOT_FOUND', '邀请链接无效，请确认是否复制完整')
 
-  if (record.status === 'member') {
+  if (record.stage === 'onboard' && record.result === 'passed') {
     return ok({
       alreadyMember: true,
       name: record.name,
@@ -189,14 +260,15 @@ export async function getInvite(ctx: RequestContext): Promise<Response> {
     })
   }
 
-  if (record.status !== 'invited') {
+  if (record.stage !== 'onboard' || record.result !== '') {
     return fail(409, 'INVITE_NOT_ACTIVE', '这份邀请函当前不可用，请联系工作室确认')
   }
 
-  if (!isInviteUsable(record.inviteExpiresAt, record.status)) {
+  if (!isInviteUsable(record.inviteExpiresAt, record.stage, record.result)) {
     return fail(410, 'INVITE_EXPIRED', '邀请链接已过期，请回复邮件联系我们重新发送')
   }
 
+  const settings = await getRecruitSettings(ctx.env)
   return ok(
     {
       alreadyMember: false,
@@ -204,23 +276,19 @@ export async function getInvite(ctx: RequestContext): Promise<Response> {
       studentId: record.studentId,
       email: record.email,
       expiresAt: record.inviteExpiresAt,
-      /** 确认页要填的成员档案字段里，角色从这里选 */
       roleOptions: MEMBER_ROLES,
-      /** 加入年份由服务端按当前年份填，这里只是给页面展示 */
       joinYear: String(new Date().getFullYear()),
+      cycleName: settings.cycle.name,
     },
     { headers: { 'cache-control': 'no-store' } },
   )
 }
 
 interface ConfirmInviteBody {
-  /** 成员角色，必须是 MEMBER_ROLES 之一 */
   title?: string
   nameEn?: string
-  /** 负责方向（在组期间的技术方向） */
   direction?: string
   bio?: string
-  /** 展示用邮箱，留空则用报名时填的邮箱 */
   email?: string
 }
 
@@ -228,13 +296,13 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
   const record = await getApplicationByInviteToken(ctx.env, ctx.params.token)
   if (!record) return fail(404, 'INVITE_NOT_FOUND', '邀请链接无效，请确认是否复制完整')
 
-  if (record.status === 'member') {
+  if (record.stage === 'onboard' && record.result === 'passed') {
     return fail(409, 'ALREADY_MEMBER', '你已确认加入，无需重复提交')
   }
-  if (record.status !== 'invited') {
+  if (record.stage !== 'onboard' || record.result !== '') {
     return fail(409, 'INVITE_NOT_ACTIVE', '这份邀请函当前不可用，请联系工作室确认')
   }
-  if (!isInviteUsable(record.inviteExpiresAt, record.status)) {
+  if (!isInviteUsable(record.inviteExpiresAt, record.stage, record.result)) {
     return fail(410, 'INVITE_EXPIRED', '邀请链接已过期，请回复邮件联系我们重新发送')
   }
 
@@ -250,7 +318,7 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
   const email = String(body.email ?? '').trim() || record.email
   const now = new Date()
 
-  // 写入成员表：姓名 / 学号沿用报名时的身份，年份由系统按当前年份填
+  // 写入成员表：姓名 / 学号沿用报名时的身份，加入年份取当前年份
   const member = await createEntity(ctx.env, RESOURCES.members, {
     name: record.name,
     nameEn: String(body.nameEn ?? '').trim(),
@@ -266,9 +334,11 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
   })
 
   const updated = await updateApplication(ctx.env, record.id, {
-    status: 'member',
+    stage: 'onboard',
+    result: 'passed',
     memberId: String(member.id),
     confirmedAt: now.toISOString(),
+    stageChangedAt: now.toISOString(),
   })
 
   await writeAudit(ctx.env, {
@@ -284,4 +354,95 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
     memberId: String(member.id),
     application: updated ? toStudentView(updated) : null,
   })
+}
+
+// ===== 扫码签到（空实现） =====
+
+interface CheckinBody {
+  stage?: string
+  name?: string
+  studentId?: string
+}
+
+/**
+ * 签到页提交的入口。**当前是刻意的空实现**：
+ * 不做短信/二维码凭证校验，只要求「姓名 + 学号」与该阶段的报名记录一致。
+ * 后续要做真扫码时，在这里加一个短时令牌校验即可，前端与数据层都不用动。
+ */
+export async function checkin(ctx: RequestContext): Promise<Response> {
+  const body = await readJsonBody<CheckinBody>(ctx.request)
+  if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
+
+  const stageRaw = String(body.stage ?? '').trim()
+  if (!isCheckinStage(stageRaw)) {
+    return fail(400, 'INVALID_STAGE', '签到阶段不合法')
+  }
+  const stage: CheckinStage = stageRaw
+
+  const invalid = validateCheckin(body)
+  if (invalid) return fail(400, 'VALIDATION_FAILED', invalid)
+
+  const studentId = String(body.studentId ?? '').trim()
+  const name = String(body.name ?? '').trim()
+
+  const record = await getApplicationByStudentId(ctx.env, studentId)
+  if (!record) {
+    return fail(404, 'NOT_FOUND', '没有找到你的报名记录，请核对姓名与学号，或联系工作人员')
+  }
+  if (normalizeName(record.name) !== normalizeName(name)) {
+    return fail(403, 'NAME_MISMATCH', '姓名与报名记录不一致，请核对后重试')
+  }
+
+  const eligibility = checkinEligibility(record.stage, record.result, stage)
+  if (eligibility === 'closed') {
+    return fail(409, 'RECRUIT_FINISHED', '你的报名流程已经结束，无需签到；如需确认请联系工作人员')
+  }
+  if (eligibility === 'behind') {
+    return fail(409, 'STAGE_PASSED', '你已经进入后面的环节了，这个签到码不用再扫')
+  }
+
+  const column = CHECKIN_COLUMN[stage]
+  if (record[column]) {
+    return ok({ already: true, name: record.name, stage, at: record[column] })
+  }
+
+  const now = new Date().toISOString()
+  // 签到即代表「来了」：阶段推进到当前环节、结果记为「已参加」（尚未出结果）。
+  // 也覆盖「后台还没来得及把人推进到笔试就先开考了」的情况（eligibility = ahead）。
+  await updateApplication(ctx.env, record.id, {
+    [column]: now,
+    stage: CHECKIN_STAGE_MAP[stage],
+    result: 'attended' as RecruitResult,
+    stageChangedAt: now,
+  })
+
+  await writeAudit(ctx.env, {
+    actor: `checkin:${record.studentId}`,
+    action: `checkin_${stage}`,
+    resource: 'applications',
+    targetId: record.id,
+    detail: `${record.name}（${record.studentId}）${record.stage} → ${stage}`,
+    ...requestMeta(ctx),
+  })
+
+  return ok({ already: false, name: record.name, stage, at: now })
+}
+
+/** 签到页自己要渲染的文案（阶段名写在页面上） */
+export async function getCheckinInfo(ctx: RequestContext): Promise<Response> {
+  const stageRaw = ctx.url.searchParams.get('stage') ?? ''
+  if (!isCheckinStage(stageRaw)) return fail(400, 'INVALID_STAGE', '签到阶段不合法')
+
+  const [settings, site] = await Promise.all([
+    getRecruitSettings(ctx.env),
+    getSiteConfig(ctx.env),
+  ])
+  return ok(
+    {
+      stage: stageRaw,
+      cycleName: settings.cycle.name,
+      studioName: site.studioName,
+    },
+    { headers: { 'cache-control': 'no-store' } },
+  )
 }

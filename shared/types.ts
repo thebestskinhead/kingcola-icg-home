@@ -3,6 +3,9 @@
  * 前端通过 `@shared/types` 引用，Worker 通过相对路径引用，两边永远一致。
  */
 
+// 只引类型：编译后会被完全擦除，因此 recruit.ts ↔ types.ts 之间不存在运行时循环依赖
+import type { RecruitResult, RecruitStage } from './recruit'
+
 export type MemberStatus = 'current' | 'alumni'
 
 export interface Member {
@@ -73,39 +76,16 @@ export interface Slide {
 // ===== 招新报名（状态机规则见 shared/recruit.ts） =====
 
 /**
- * 报名流水线的 14 个状态，覆盖「报名 → 笔试 → 面试 → 预备期 → 转正」全流程。
- * 中文名 / 所属阶段 / 允许的流转都在 `shared/recruit.ts`，与前端共用同一份。
+ * 报名记录的来源。
+ * - `web`    同学在官网用教务网账号自助提交
+ * - `manual` 未报名但现场来考，管理员手工补录（这类人没有报名表文件，只有姓名 + 学号 + 联系方式）
  */
-export type ApplicationStatus =
-  /** 已提交报名（待安排笔试） */
-  | 'submitted'
-  /** 材料未通过初筛 */
-  | 'rejected'
-  /** 已安排笔试 */
-  | 'written_scheduled'
-  /** 笔试通过 */
-  | 'written_passed'
-  /** 笔试未通过 */
-  | 'written_failed'
-  /** 已安排面试 */
-  | 'interview_scheduled'
-  /** 面试通过 */
-  | 'interview_passed'
-  /** 面试未通过 */
-  | 'interview_failed'
-  /** 预备成员（试用期） */
-  | 'probation'
-  /** 预备期未通过 */
-  | 'probation_failed'
-  /** 已发送邀请函（待本人确认） */
-  | 'invited'
-  /** 正式成员（已写入成员表） */
-  | 'member'
-  /** 收到邀请但放弃 */
-  | 'declined'
-  /** 主动退出 / 失联 */
-  | 'withdrawn'
+export type ApplicationSource = 'web' | 'manual'
 
+/**
+ * 报名记录用「阶段 + 该阶段结果」两个属性描述状态，而不是一列枚举。
+ * 中文标签、允许的流转、周期配置全部在 `shared/recruit.ts`，前后端共用同一份。
+ */
 export interface Application {
   id: string
   /** 学号，来自教务网会话；同一位同学只保留一条记录 */
@@ -115,27 +95,48 @@ export interface Application {
   email: string
   phone: string
   qq: string
-  /** 报名表在 R2 的相对地址，形如 /api/files/applications/xxx.pdf（含个人信息，仅管理员可下载） */
+  /** 报名表相对地址，形如 /api/files/applications/xxx.pdf（含个人信息，仅管理员可下载） */
   fileUrl: string
   fileName: string
   fileSize: number
-  status: ApplicationStatus
 
-  // ---- 笔试 ----
-  /** 笔试时间（YYYY-MM-DDTHH:mm，用于邀请邮件与后台展示） */
-  writtenAt: string
+  // ---- 状态（两列） ----
+  /** 当前阶段：报名 / 笔试 / 面试 / 答辩 / 转正 */
+  stage: RecruitStage
+  /** 该阶段的结果，空串表示尚无结论 */
+  result: RecruitResult
+  /** 阶段最后一次变更时间（ISO） */
+  stageChangedAt: string
+
+  // ---- 报名来源 ----
+  /** web = 同学自己在官网提交；manual = 未报名但现场来考，管理员手工补录 */
+  source: ApplicationSource
+
+  // ---- 签到（每个阶段各自记录） ----
+  writtenCheckinAt: string
+  interviewCheckinAt: string
+  defenseCheckinAt: string
+  /**
+   * 签到发生在哪一场（recruit_sessions.id）。
+   * 开放参加制下同学任选一场，所以既要记「签没签」也要记「签的哪场」，
+   * 后台才能按场次统计到场人数。空串 = 没签或签在已删除的场次上。
+   */
+  writtenSessionId: string
+  interviewSessionId: string
+  defenseSessionId: string
+
+  // ---- 成绩与评语 ----
   writtenScore: string
+  interviewScore: string
+  defenseScore: string
   writtenNote: string
-
-  // ---- 面试 ----
-  interviewAt: string
   interviewNote: string
-
-  // ---- 预备期 ----
-  probationNote: string
+  defenseNote: string
 
   // ---- 邀请函与转正 ----
   invitedAt: string
+  /** 邀请函失效时间（ISO） */
+  inviteExpiresAt: string
   confirmedAt: string
   /** 转正后对应 members.id */
   memberId: string

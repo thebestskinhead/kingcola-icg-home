@@ -1,39 +1,56 @@
 /**
- * 招新报名的**管理员侧**接口（全部需要管理员会话）。
+ * 招新报名的**后台明细接口**（全部需要管理员会话）。
  *
- *   GET    /api/admin/applications            列表（状态筛选 + 关键词搜索）
- *   GET    /api/admin/applications/:id        单条详情
- *   PUT    /api/admin/applications/:id        推进状态机 + 记录过程字段 + 发通知邮件
- *   GET    /api/admin/applications/:id/file   下载报名表（唯一能拿到该文件的入口）
- *   DELETE /api/admin/applications/:id        删除记录（连带清理 R2 文件）
+ *   GET    /api/admin/applications              列表（阶段 / 结果 / 关键词筛选 + 分页）
+ *   GET    /api/admin/applications/:id          单条详情（含该同学的发信记录）
+ *   PUT    /api/admin/applications/:id          改状态 / 记成绩 / 勾签到 / 补发某封信
+ *   POST   /api/admin/applications/bulk         批量：签到、标记未参加、退出报名
+ *   POST   /api/admin/applications/notify       批量通知信（自定义主题与正文）
+ *   GET    /api/admin/applications/:id/file     下载报名表（唯一能拿到该文件的入口）
+ *   DELETE /api/admin/applications/:id          删除记录（连带清理报名表与发信日志）
  *
- * 状态流转**只走 PUT 这一个口**：改状态、写笔试/面试安排、发邮件是同一次操作，
- * 避免出现「状态改了但邮件没发」这种两头不一致。
+ * 状态只有两列（stage + result），所以校验也很直接：
+ *   1. result 必须是该 stage 允许的取值（STAGE_RESULTS）；
+ *   2. 跨阶段只能相邻一步（canMoveStage），允许退回一步改判。
+ * 成绩晋级、录取、答辩结果等批量推进走 `/api/admin/recruit/auto`（预览后执行），
+ * 那里会把名单、邮件与状态一次性处理完。
  */
 
-import type { SmtpConfig } from '../../shared/mail'
 import {
-  APPLICATION_NOTICE_META,
-  APPLICATION_STATUS_META,
-  APPLICATION_TRANSITIONS,
-  applicationInviteExpiry,
-  canTransition,
-  isApplicationStatus,
-  noticeForStatus,
-  type ApplicationNoticeKind,
+  applicationLabel,
+  canMoveStage,
+  isRecruitResult,
+  isRecruitStage,
+  isValidStageResult,
+  renderTemplate,
+  RECRUIT_STAGE_LABELS,
+  type CheckinStage,
+  type RecruitMailKind,
+  type RecruitResult,
+  type RecruitStage,
 } from '../../shared/recruit'
-import type { ApplicationStatus } from '../../shared/types'
 import {
-  countApplicationsByStatus,
   deleteApplication,
   getApplication,
   listApplications,
+  listMailLogs,
   updateApplication,
+  updateApplications,
+  writeMailLog,
+  type ApplicationPatch,
   type ApplicationRecord,
 } from '../lib/applications'
-import { randomHex } from '../lib/crypto'
 import { clientIp, fail, ok, readJsonBody } from '../lib/http'
-import { sendApplicationNotice } from '../lib/recruit-mail'
+import { isMailConfigured, sendMail } from '../lib/mailer'
+import { getRecruitSettings } from '../lib/recruit-config'
+import {
+  buildNoticeVars,
+  isNoticeKind,
+  sendApplicationNotice,
+  summarizeMailResults,
+  type NoticeContext,
+  type SendNoticeResult,
+} from '../lib/recruit-mail'
 import { getSiteConfig, writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
 import { deleteStoredFile, getStorage, resolveFileRef } from '../lib/storage'
@@ -47,9 +64,28 @@ function requestMeta(ctx: RequestContext) {
   return { ip: clientIp(ctx.request), ua: ctx.request.headers.get('user-agent') ?? '' }
 }
 
-/** 管理端视图：把邀请凭证换成可直接复制的链接（凭证本身不外泄给前端） */
+/** 签到时间写入哪一列 */
+const CHECKIN_COLUMN: Record<CheckinStage, 'writtenCheckinAt' | 'interviewCheckinAt' | 'defenseCheckinAt'> = {
+  written: 'writtenCheckinAt',
+  interview: 'interviewCheckinAt',
+  defense: 'defenseCheckinAt',
+}
+
+async function noticeContext(ctx: RequestContext): Promise<NoticeContext> {
+  const [settings, studio] = await Promise.all([getRecruitSettings(ctx.env), getSiteConfig(ctx.env)])
+  return {
+    studio,
+    cycle: settings.cycle,
+    templates: settings.templates,
+    origin: ctx.url.origin,
+  }
+}
+
+/** 后台视图：补上派生标签，省得前端再算一遍 */
 export interface AdminApplicationView extends ApplicationRecord {
   inviteUrl: string
+  stageLabel: string
+  resultLabel: string
   statusLabel: string
 }
 
@@ -57,58 +93,68 @@ function toAdminView(record: ApplicationRecord, origin: string): AdminApplicatio
   return {
     ...record,
     inviteUrl: record.inviteToken ? `${origin.replace(/\/+$/, '')}/invite/${record.inviteToken}` : '',
-    statusLabel: APPLICATION_STATUS_META[record.status]?.label ?? record.status,
+    stageLabel: RECRUIT_STAGE_LABELS[record.stage],
+    resultLabel: record.result === '' ? '待定' : record.result,
+    statusLabel: applicationLabel(record.stage, record.result),
   }
 }
 
 // ===== 列表 / 详情 =====
 
 export async function listApplicationsAdmin(ctx: RequestContext): Promise<Response> {
-  const rawStatus = (ctx.url.searchParams.get('status') ?? '').trim()
-  const statuses = rawStatus
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s): s is ApplicationStatus => Boolean(s) && isApplicationStatus(s))
+  const stageParam = (ctx.url.searchParams.get('stage') ?? '').trim()
+  const stages = stageParam
+    ? (stageParam.split(',').filter((value) => isRecruitStage(value)) as RecruitStage[])
+    : undefined
 
-  const [result, counts] = await Promise.all([
-    listApplications(ctx.env, {
-      statuses,
-      search: ctx.url.searchParams.get('q') ?? undefined,
-      limit: Number(ctx.url.searchParams.get('limit') ?? 200),
-      offset: Number(ctx.url.searchParams.get('offset') ?? 0),
-    }),
-    countApplicationsByStatus(ctx.env),
-  ])
+  const resultParam = ctx.url.searchParams.get('result')
+  const results =
+    resultParam === null
+      ? undefined
+      : (resultParam.split(',').filter((value) => isRecruitResult(value)) as RecruitResult[])
+
+  const result = await listApplications(ctx.env, {
+    stages,
+    results,
+    search: ctx.url.searchParams.get('q') ?? undefined,
+    limit: Number(ctx.url.searchParams.get('limit') ?? 500),
+    offset: Number(ctx.url.searchParams.get('offset') ?? 0),
+  })
 
   return ok({
     items: result.items.map((item) => toAdminView(item, ctx.url.origin)),
     total: result.total,
-    counts,
   })
 }
 
 export async function getApplicationAdmin(ctx: RequestContext): Promise<Response> {
   const record = await getApplication(ctx.env, ctx.params.id)
   if (!record) return fail(404, 'NOT_FOUND', '报名记录不存在')
-  return ok(toAdminView(record, ctx.url.origin))
+
+  const logs = await listMailLogs(ctx.env, { applicationId: record.id, limit: 50 })
+  return ok({ application: toAdminView(record, ctx.url.origin), mails: logs })
 }
 
-// ===== 推进状态机 =====
+// ===== 单条更新 =====
 
 interface UpdateApplicationBody {
-  status?: string
-  /** 管理员备注 */
-  note?: string
-  writtenAt?: string
+  stage?: string
+  result?: string
+  /** 勾选 / 取消签到；取消时传 value: false */
+  checkin?: { stage?: string; value?: boolean }
   writtenScore?: string
+  interviewScore?: string
+  defenseScore?: string
   writtenNote?: string
-  interviewAt?: string
   interviewNote?: string
-  probationNote?: string
-  /** 默认 true：状态推进后自动发对应的通知邮件 */
-  sendMail?: boolean
-  /** 显式指定要补发哪封信（状态不变也能重发） */
+  defenseNote?: string
+  note?: string
+  /** 补发某封信（状态不变也能发） */
   notice?: string
+  /** 编辑时是否顺手改联系方式 */
+  email?: string
+  phone?: string
+  qq?: string
 }
 
 export async function updateApplicationAdmin(ctx: RequestContext): Promise<Response> {
@@ -118,86 +164,109 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
   const body = await readJsonBody<UpdateApplicationBody>(ctx.request)
   if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
 
-  // ---- 1. 过程字段（与状态无关，随时可改） ----
-  const patch: Record<string, string> = {}
+  const nowIso = new Date().toISOString()
+  const patch: ApplicationPatch = {}
+
+  // ---- 文字字段 ----
   for (const key of [
-    'note',
-    'writtenAt',
     'writtenScore',
+    'interviewScore',
+    'defenseScore',
     'writtenNote',
-    'interviewAt',
     'interviewNote',
-    'probationNote',
+    'defenseNote',
+    'note',
+    'email',
+    'phone',
+    'qq',
   ] as const) {
-    if (body[key] !== undefined) patch[key] = String(body[key] ?? '')
+    if (body[key] !== undefined) patch[key] = String(body[key] ?? '').trim()
   }
 
-  // ---- 2. 状态流转 ----
-  const nextStatusRaw = (body.status ?? '').trim()
-  let nextStatus: ApplicationStatus = record.status
-  const changing = Boolean(nextStatusRaw) && nextStatusRaw !== record.status
+  // ---- 状态：stage + result ----
+  const nextStageRaw = (body.stage ?? '').trim()
+  const nextResultRaw = body.result
+  let nextStage: RecruitStage = record.stage
+  let nextResult: RecruitResult = record.result
 
-  if (changing) {
-    if (!isApplicationStatus(nextStatusRaw)) {
-      return fail(400, 'INVALID_STATUS', `未知的状态：${nextStatusRaw}`)
-    }
-    nextStatus = nextStatusRaw
-    if (!canTransition(record.status, nextStatus)) {
-      const allowed = APPLICATION_TRANSITIONS[record.status]
-        .map((s) => APPLICATION_STATUS_META[s].label)
-        .join('、')
+  if (nextStageRaw && nextStageRaw !== record.stage) {
+    if (!isRecruitStage(nextStageRaw)) return fail(400, 'INVALID_STAGE', `未知的阶段：${nextStageRaw}`)
+    if (!canMoveStage(record.stage, nextStageRaw)) {
       return fail(
         409,
         'INVALID_TRANSITION',
-        `不能从「${APPLICATION_STATUS_META[record.status].label}」直接改为「${
-          APPLICATION_STATUS_META[nextStatus].label
-        }」${allowed ? `，当前可改为：${allowed}` : '（该状态是终态）'}`,
+        `只能推进到相邻阶段：当前「${RECRUIT_STAGE_LABELS[record.stage]}」。如需跳阶段，请逐步操作。`,
       )
     }
-    patch.status = nextStatus
+    nextStage = nextStageRaw
   }
 
-  // ---- 3. 邀请函：进入 invited 时签发一次性凭证 ----
-  if (nextStatus === 'invited' && changing && !record.inviteToken) {
-    patch.inviteToken = randomHex(24)
-    patch.inviteExpiresAt = applicationInviteExpiry()
-    patch.invitedAt = new Date().toISOString()
+  if (nextResultRaw !== undefined && nextResultRaw !== record.result) {
+    if (!isRecruitResult(nextResultRaw)) {
+      return fail(400, 'INVALID_RESULT', `未知的结果：${nextResultRaw}`)
+    }
+    nextResult = nextResultRaw
   }
 
-  const updated =
-    Object.keys(patch).length > 0 ? await updateApplication(ctx.env, record.id, patch) : record
+  const statusChanged = nextStage !== record.stage || nextResult !== record.result
+  if (statusChanged) {
+    // 跨阶段迁移时，结果回到「尚无结论」是默认行为；显式传了就按传的来
+    if (nextStage !== record.stage && nextResultRaw === undefined) nextResult = ''
+    if (!isValidStageResult(nextStage, nextResult)) {
+      return fail(
+        400,
+        'INVALID_STAGE_RESULT',
+        `「${RECRUIT_STAGE_LABELS[nextStage]}」阶段不支持「${nextResult === '' ? '待定' : nextResult}」这个结果`,
+      )
+    }
+    patch.stage = nextStage
+    patch.result = nextResult
+    patch.stageChangedAt = nowIso
+  }
+
+  // ---- 签到 ----
+  const checkinStage = (body.checkin?.stage ?? '').trim()
+  if (checkinStage) {
+    const column = CHECKIN_COLUMN[checkinStage as CheckinStage]
+    if (!column) return fail(400, 'INVALID_STAGE', `未知的签到阶段：${checkinStage}`)
+    const on = body.checkin?.value !== false
+    patch[column] = on ? nowIso : ''
+    // 补勾签到：结果推进到「已参加」（已有结论的不覆盖）
+    if (on && patch.result === undefined && record.result === '') {
+      patch.result = 'attended'
+      patch.stageChangedAt = nowIso
+    }
+  }
+
+  const updated = await updateApplication(ctx.env, record.id, patch)
   if (!updated) return fail(404, 'NOT_FOUND', '报名记录不存在')
 
-  // ---- 4. 通知邮件 ----
-  // 优先显式指定；否则按「状态推进」推导；状态没变又没指定就什么都不发
-  const explicit = (body.notice ?? '').trim()
-  const kind: ApplicationNoticeKind | null = explicit
-    ? (explicit as ApplicationNoticeKind)
-    : changing
-      ? noticeForStatus(nextStatus)
-      : null
-  const known = kind !== null && Object.prototype.hasOwnProperty.call(APPLICATION_NOTICE_META, kind)
-
-  let mail: Awaited<ReturnType<typeof sendApplicationNotice>> | null = null
-  if (kind && known && body.sendMail !== false) {
-    const [site, runtime] = await Promise.all([getSiteConfig(ctx.env), resolveRuntimeConfig(ctx)])
-    mail = await sendApplicationNotice(ctx.env, runtime.mail as SmtpConfig, updated, kind, {
-      studio: site,
-      origin: ctx.url.origin,
-    })
+  // ---- 邮件 ----
+  let mail = null as Awaited<ReturnType<typeof sendApplicationNotice>> | null
+  const noticeRaw = (body.notice ?? '').trim()
+  if (noticeRaw && isNoticeKind(noticeRaw)) {
+    const runtime = await resolveRuntimeConfig(ctx)
+    mail = await sendApplicationNotice(
+      ctx.env,
+      runtime.mail,
+      updated,
+      noticeRaw as RecruitMailKind,
+      await noticeContext(ctx),
+      actorOf(ctx),
+    )
   }
 
   await writeAudit(ctx.env, {
     actor: actorOf(ctx),
-    action: changing ? 'advance_application' : 'update_application',
+    action: statusChanged ? 'advance_application' : 'update_application',
     resource: 'applications',
     targetId: record.id,
     detail: [
       `${record.name}(${record.studentId})`,
-      changing
-        ? `${APPLICATION_STATUS_META[record.status].label} → ${APPLICATION_STATUS_META[nextStatus].label}`
+      statusChanged
+        ? `${applicationLabel(record.stage, record.result)} → ${applicationLabel(nextStage, nextResult)}`
         : '字段更新',
-      mail ? `mail=${mail.code}` : kind ? 'mail=skipped' : '',
+      mail ? `mail=${mail.code}` : '',
     ]
       .filter(Boolean)
       .join(' · '),
@@ -205,6 +274,181 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
   })
 
   return ok({ application: toAdminView(updated, ctx.url.origin), mail })
+}
+
+// ===== 批量操作 =====
+
+interface BulkBody {
+  ids?: string[]
+  /** checkin 勾签到 / absent 标记未参加 / withdraw 退出报名 */
+  action?: string
+  /** checkin 需要指定阶段 */
+  stage?: string
+}
+
+export async function bulkApplicationsAdmin(ctx: RequestContext): Promise<Response> {
+  const body = await readJsonBody<BulkBody>(ctx.request)
+  if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
+
+  const ids = (body.ids ?? []).map((id) => String(id).trim()).filter(Boolean)
+  if (ids.length === 0) return fail(400, 'NO_SELECTION', '请先勾选要处理的同学')
+
+  const action = (body.action ?? '').trim()
+  const nowIso = new Date().toISOString()
+  const updates: Array<{ id: string } & ApplicationPatch> = []
+
+  switch (action) {
+    case 'checkin': {
+      const stage = (body.stage ?? '').trim() as CheckinStage
+      const column = CHECKIN_COLUMN[stage]
+      if (!column) return fail(400, 'INVALID_STAGE', '批量签到需要指定阶段')
+      for (const id of ids) {
+        const record = await getApplication(ctx.env, id)
+        if (!record) continue
+        const patch: { id: string } & ApplicationPatch = { id, [column]: nowIso }
+        if (record.result === '') {
+          patch.result = 'attended'
+          patch.stageChangedAt = nowIso
+        }
+        updates.push(patch)
+      }
+      break
+    }
+    case 'absent':
+    case 'withdraw': {
+      const result: RecruitResult = action === 'absent' ? 'absent' : 'withdrawn'
+      for (const id of ids) {
+        const record = await getApplication(ctx.env, id)
+        if (!record) continue
+        if (!isValidStageResult(record.stage, result)) continue
+        updates.push({ id, result, stageChangedAt: nowIso })
+      }
+      break
+    }
+    default:
+      return fail(400, 'INVALID_ACTION', `未知的批量操作：${action}`)
+  }
+
+  const moved = await updateApplications(ctx.env, updates)
+
+  await writeAudit(ctx.env, {
+    actor: actorOf(ctx),
+    action: `bulk_${action}`,
+    resource: 'applications',
+    targetId: action,
+    detail: `勾选 ${ids.length} 条，实际改动 ${moved} 条`,
+    ...requestMeta(ctx),
+  })
+
+  return ok({ moved })
+}
+
+// ===== 批量通知信 =====
+
+interface NotifyBody {
+  ids?: string[]
+  subject?: string
+  body?: string
+}
+
+/**
+ * 给勾选的同学群发一封自定义邮件（如「面试地点改了」）。
+ * 主题与正文同样支持 `{变量}`，渲染规则与系统通知一致。
+ */
+export async function notifyApplicationsAdmin(ctx: RequestContext): Promise<Response> {
+  const payload = await readJsonBody<NotifyBody>(ctx.request)
+  if (!payload) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
+
+  const ids = (payload.ids ?? []).map((id) => String(id).trim()).filter(Boolean)
+  if (ids.length === 0) return fail(400, 'NO_SELECTION', '请先勾选要通知的同学')
+
+  const subject = (payload.subject ?? '').trim()
+  const text = (payload.body ?? '').trim()
+  if (!subject) return fail(400, 'VALIDATION_FAILED', '请填写邮件主题')
+  if (!text) return fail(400, 'VALIDATION_FAILED', '请填写邮件正文')
+
+  const [settings, studio, runtime] = await Promise.all([
+    getRecruitSettings(ctx.env),
+    getSiteConfig(ctx.env),
+    resolveRuntimeConfig(ctx),
+  ])
+  const context: NoticeContext = {
+    studio,
+    cycle: settings.cycle,
+    templates: settings.templates,
+    origin: ctx.url.origin,
+  }
+
+  const results: SendNoticeResult[] = []
+  for (const id of ids) {
+    const record = await getApplication(ctx.env, id)
+    if (!record) continue
+
+    // 自定义通知复用系统通知的变量与渲染规则，只是换了文案
+    const to = record.email.trim()
+    if (!to) {
+      results.push({
+        kind: 'written_invite',
+        sent: false,
+        code: 'NO_RECIPIENT',
+        message: `${record.name} 没有邮箱，未发送`,
+        to: '',
+      })
+      continue
+    }
+
+    const vars = buildNoticeVars(record, context)
+    const built = {
+      to,
+      subject: renderTemplate(subject, vars).trim() || subject,
+      text: renderTemplate(text, vars),
+    }
+
+    const outcome = isMailConfigured(ctx.env, runtime.mail)
+      ? await sendMail(ctx.env, runtime.mail, {
+          to: built.to,
+          subject: built.subject,
+          text: built.text,
+          replyTo: studio.contactEmail.trim() || undefined,
+        })
+      : {
+          ok: false as const,
+          code: 'NOT_CONFIGURED' as const,
+          message: '邮件通道未接通，本封信未发送',
+        }
+
+    const result: SendNoticeResult = {
+      kind: 'written_invite',
+      sent: outcome.ok,
+      code: outcome.ok ? 'OK' : outcome.code,
+      message: outcome.ok ? `已发送至 ${built.to}` : outcome.message,
+      to: built.to,
+    }
+    results.push(result)
+
+    // 自定义通知同样进发信日志，后台能看到「谁收到过什么」
+    await writeMailLog(ctx.env, {
+      applicationId: record.id,
+      kind: 'custom',
+      recipient: built.to,
+      subject: built.subject,
+      ok: result.sent,
+      code: result.code,
+      message: result.sent ? '自定义通知' : result.message,
+      actor: actorOf(ctx),
+    })
+  }
+
+  await writeAudit(ctx.env, {
+    actor: actorOf(ctx),
+    action: 'notify_applications',
+    resource: 'applications',
+    targetId: 'notify',
+    detail: `群发「${subject}」给 ${ids.length} 人：${summarizeMailResults(results)}`,
+    ...requestMeta(ctx),
+  })
+
+  return ok({ summary: summarizeMailResults(results), results })
 }
 
 // ===== 下载 / 删除 =====
@@ -217,7 +461,8 @@ export async function downloadApplicationFile(ctx: RequestContext): Promise<Resp
   const ref = await resolveFileRef(ctx.env, record.fileUrl)
   if (!ref) return fail(404, 'FILE_MISSING', '该记录没有报名表文件')
 
-  const object = await (await getStorage(ctx.env, ref.purpose)).get(ref.key)
+  const storage = await getStorage(ctx.env, ref.purpose)
+  const object = await storage.get(ref.key)
   if (!object) return fail(404, 'FILE_NOT_FOUND', '报名表文件已丢失')
 
   const fallbackName = record.fileName || ref.key.split('/').pop() || 'application'
@@ -255,3 +500,5 @@ export async function deleteApplicationAdmin(ctx: RequestContext): Promise<Respo
 
   return ok({ id: record.id })
 }
+
+

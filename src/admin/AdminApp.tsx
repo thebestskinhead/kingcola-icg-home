@@ -6,9 +6,15 @@ import { AdminLayout } from './AdminLayout'
 import { LoginPage } from './LoginPage'
 import { Dashboard } from './Dashboard'
 import { ContentPage } from './ContentPage'
-import { ApplicationsPage } from './ApplicationsPage'
 import { AuditPage } from './AuditPage'
 import { SettingsPage } from './SettingsPage'
+import { BoardPage } from './recruit/BoardPage'
+import { CyclePage } from './recruit/CyclePage'
+import { ApplicationsPage } from './recruit/ApplicationsPage'
+import { ScoresPage } from './recruit/ScoresPage'
+import { AutoPage } from './recruit/AutoPage'
+import { TemplatesPage } from './recruit/TemplatesPage'
+import { MailsPage } from './recruit/MailsPage'
 import { StoragePage } from './StoragePage'
 
 export function AdminApp() {
@@ -56,7 +62,14 @@ export function AdminApp() {
       <AdminLayout identity={identity} onLogout={logout}>
         <Routes>
           <Route index element={<Dashboard />} />
-          <Route path="applications" element={<ApplicationsPage />} />
+          {/* 招新模块：一个侧栏入口 + 内部页签（看板 / 周期 / 报名 / 成绩 / 自动流程 / 模板 / 日志） */}
+          <Route path="recruit" element={<BoardPage />} />
+          <Route path="recruit/cycle" element={<CyclePage />} />
+          <Route path="recruit/applications" element={<ApplicationsPage />} />
+          <Route path="recruit/scores" element={<ScoresPage />} />
+          <Route path="recruit/auto" element={<AutoPage />} />
+          <Route path="recruit/templates" element={<TemplatesPage />} />
+          <Route path="recruit/mails" element={<MailsPage />} />
           <Route path="content/:resource" element={<ContentPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="storage" element={<StoragePage />} />

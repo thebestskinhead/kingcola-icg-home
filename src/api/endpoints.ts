@@ -6,12 +6,22 @@ import type {
   StoragePurpose,
   StorageTargetConfig,
 } from '@shared/storage'
-import type { ApplicationNoticeKind } from '@shared/recruit'
+import type {
+  CheckinStage,
+  RecruitAutoPreview,
+  RecruitAutoTask,
+  RecruitBoard,
+  RecruitCycleConfig,
+  RecruitMailKind,
+  RecruitPhase,
+  RecruitResult,
+  RecruitStage,
+  RecruitTemplates,
+} from '@shared/recruit'
 import type { ApplyTokenPayload, SsoMeResponse } from '@shared/sso'
 import type { RuntimeConfig } from '@shared/runtime'
 import type {
   Application,
-  ApplicationStatus,
   Member,
   NewsItem,
   Project,
@@ -184,7 +194,47 @@ export function adminUpdateConfig(patch: { site?: Partial<SiteConfig>; runtime?:
   )
 }
 
-// ===== 招新报名（学生侧） =====
+// ===== 招新（公开：报名页与签到页用） =====
+
+export interface RecruitStatus {
+  phase: RecruitPhase
+  name: string
+  applyStart: string
+  applyEnd: string
+  applyStartText: string
+  applyEndText: string
+  /** 报名通道是否开放 */
+  applyOpen: boolean
+  /** 给「加入我们」页面的说明文案 */
+  notice: string
+}
+
+export function fetchRecruitStatus(signal?: AbortSignal) {
+  return apiRequest<RecruitStatus>('/api/public/recruit', { signal })
+}
+
+export interface CheckinInfo {
+  stage: CheckinStage
+  cycleName: string
+  studioName: string
+}
+
+export function fetchCheckinInfo(stage: CheckinStage) {
+  return apiRequest<CheckinInfo>(`/api/applications/checkin-info?stage=${stage}`)
+}
+
+export interface CheckinResult {
+  already: boolean
+  name: string
+  stage: CheckinStage
+  at: string
+}
+
+export function submitCheckin(body: { stage: CheckinStage; name: string; studentId: string }) {
+  return apiRequest<CheckinResult>('/api/applications/checkin', jsonInit('POST', body))
+}
+
+// ===== 招新（学生侧） =====
 
 /**
  * 提交报名表（multipart）。报名表文件按后台「对象存储」页的
@@ -194,7 +244,22 @@ export function submitApplication(form: FormData) {
   return apiRequest<Application>('/api/applications', { method: 'POST', body: form }, { timeoutMs: 120_000 })
 }
 
+/** 进度页要用到的本届安排（时间都是后台配置里的全局时间窗） */
+export interface RecruitSchedule {
+  writtenAt: string
+  writtenPlace: string
+  interviewAt: string
+  interviewPlace: string
+  defenseStart: string
+  defenseEnd: string
+  onboardDeadline: string
+}
+
 export interface MyApplicationResponse {
+  phase: RecruitPhase
+  cycleName: string
+  notice: string
+  schedule: RecruitSchedule
   application: Application | null
   /** 已发出邀请函时给出确认页地址，省得同学翻邮箱找链接 */
   inviteUrl?: string
@@ -204,7 +269,7 @@ export function myApplication(signal?: AbortSignal) {
   return apiRequest<MyApplicationResponse>('/api/applications/me', { signal })
 }
 
-// ===== 招新报名（邀请函确认页） =====
+// ===== 招新（邀请函确认页） =====
 
 export interface InviteInfo {
   alreadyMember: boolean
@@ -214,6 +279,7 @@ export interface InviteInfo {
   expiresAt?: string
   roleOptions?: readonly string[]
   joinYear?: string
+  cycleName?: string
   confirmedAt?: string
 }
 
@@ -236,28 +302,124 @@ export function confirmInvite(token: string, body: ConfirmInviteBody) {
   )
 }
 
-// ===== 招新报名（后台） =====
+// ===== 招新（后台：周期 / 模板 / 看板 / 自动流程） =====
 
-/** 后台视图比学生视图多出邀请链接与状态中文名 */
+export interface AdminRecruitSettings {
+  cycle: RecruitCycleConfig
+  templates: RecruitTemplates
+  phase: RecruitPhase
+  /** 招新模块现在对管理员是否开放（非招新期菜单收起） */
+  moduleOpen: boolean
+  notice: string
+  /** 模板里写错的变量，按模板分类给出提示 */
+  unknownVariables: Record<string, string[]>
+}
+
+export function adminGetRecruit() {
+  return apiRequest<AdminRecruitSettings>('/api/admin/recruit')
+}
+
+export function adminSaveRecruit(patch: {
+  cycle?: Partial<RecruitCycleConfig>
+  templates?: Partial<RecruitTemplates>
+}) {
+  return apiRequest<{ cycle: RecruitCycleConfig; templates: RecruitTemplates; phase: RecruitPhase }>(
+    '/api/admin/recruit',
+    jsonInit('PUT', patch),
+  )
+}
+
+export function adminGetRecruitBoard() {
+  return apiRequest<RecruitBoard>('/api/admin/recruit/board')
+}
+
+export function adminPreviewRecruitAuto(task: RecruitAutoTask, selectedIds: string[] = []) {
+  const search = new URLSearchParams({ task })
+  if (selectedIds.length > 0) search.set('selected', selectedIds.join(','))
+  return apiRequest<RecruitAutoPreview>(`/api/admin/recruit/auto?${search}`)
+}
+
+export interface RunRecruitAutoResult {
+  task: RecruitAutoTask
+  moved: number
+  mail: {
+    sent: number
+    failed: number
+    summary: string
+    results: Array<{ kind: string; sent: boolean; code: string; message: string; to: string }>
+  }
+  archive: { url: string; total: number } | null
+  preview: RecruitAutoPreview
+}
+
+export function adminRunRecruitAuto(body: {
+  task: RecruitAutoTask
+  selectedIds?: string[]
+  force?: boolean
+}) {
+  return apiRequest<RunRecruitAutoResult>(
+    '/api/admin/recruit/auto',
+    jsonInit('POST', body),
+    { timeoutMs: 120_000 },
+  )
+}
+
+/** 名单导出下载地址：直接交给浏览器打开即可下载 CSV */
+export function recruitExportUrl(params: { stage?: string; result?: string; q?: string } = {}) {
+  const search = new URLSearchParams()
+  if (params.stage) search.set('stage', params.stage)
+  if (params.result !== undefined) search.set('result', params.result)
+  if (params.q) search.set('q', params.q)
+  const suffix = search.toString() ? `?${search}` : ''
+  return `/api/admin/recruit/export${suffix}`
+}
+
+export interface MailLogRow {
+  id: string
+  applicationId: string
+  kind: string
+  recipient: string
+  subject: string
+  ok: boolean
+  code: string
+  message: string
+  actor: string
+  createdAt: string
+}
+
+export function adminGetRecruitMails(limit = 200) {
+  return apiRequest<{ logs: MailLogRow[] }>(`/api/admin/recruit/mails?limit=${limit}`)
+}
+
+// ===== 招新（后台：报名明细） =====
+
+/** 后台视图比学生视图多出邀请链接与派生标签 */
 export interface AdminApplication extends Application {
   inviteToken: string
-  inviteExpiresAt: string
   inviteUrl: string
+  stageLabel: string
+  resultLabel: string
   statusLabel: string
 }
 
 export interface AdminApplicationList {
   items: AdminApplication[]
   total: number
-  /** 各状态的条数，用于列表页顶部的筛选徽章 */
-  counts: Record<string, number>
 }
 
 export function adminListApplications(
-  params: { status?: ApplicationStatus[]; q?: string; limit?: number; offset?: number } = {},
+  params: {
+    stages?: RecruitStage[]
+    /** 注意：传空数组表示不过滤；想看「尚无结论」要显式传 [''] */
+    results?: RecruitResult[]
+    q?: string
+    limit?: number
+    offset?: number
+  } = {},
 ) {
   const search = new URLSearchParams()
-  if (params.status?.length) search.set('status', params.status.join(','))
+  if (params.stages?.length) search.set('stage', params.stages.join(','))
+  if (params.results) search.set('result', params.results.join(','))
   if (params.q) search.set('q', params.q)
   if (params.limit) search.set('limit', String(params.limit))
   if (params.offset) search.set('offset', String(params.offset))
@@ -265,31 +427,65 @@ export function adminListApplications(
   return apiRequest<AdminApplicationList>(`/api/admin/applications${suffix}`)
 }
 
+export interface ApplicationDetail {
+  application: AdminApplication
+  mails: MailLogRow[]
+}
+
+export function adminGetApplication(id: string) {
+  return apiRequest<ApplicationDetail>(`/api/admin/applications/${encodeURIComponent(id)}`)
+}
+
 export interface UpdateApplicationBody {
-  status?: ApplicationStatus
-  note?: string
-  writtenAt?: string
+  stage?: RecruitStage
+  result?: RecruitResult
+  /** 勾选 / 取消签到（value: false 表示取消） */
+  checkin?: { stage: CheckinStage; value?: boolean }
   writtenScore?: string
+  interviewScore?: string
+  defenseScore?: string
   writtenNote?: string
-  interviewAt?: string
   interviewNote?: string
-  probationNote?: string
-  sendMail?: boolean
-  /** 补发某封信（状态不变时也能用） */
-  notice?: ApplicationNoticeKind
+  defenseNote?: string
+  note?: string
+  email?: string
+  phone?: string
+  qq?: string
+  /** 补发某封信（状态不变也能发） */
+  notice?: RecruitMailKind
 }
 
 export interface UpdateApplicationResult {
   application: AdminApplication
   /** 本次触发的邮件结果；没有发信时为 null */
-  mail: { kind: ApplicationNoticeKind; sent: boolean; code: string; message: string } | null
+  mail: { kind: RecruitMailKind; sent: boolean; code: string; message: string; to: string } | null
 }
 
 export function adminUpdateApplication(id: string, body: UpdateApplicationBody) {
   return apiRequest<UpdateApplicationResult>(
     `/api/admin/applications/${encodeURIComponent(id)}`,
     jsonInit('PUT', body),
+    { timeoutMs: 60_000 },
   )
+}
+
+export function adminBulkApplications(body: {
+  ids: string[]
+  action: 'checkin' | 'absent' | 'withdraw'
+  stage?: CheckinStage
+}) {
+  return apiRequest<{ moved: number }>(
+    '/api/admin/applications/bulk',
+    jsonInit('POST', body),
+    { timeoutMs: 60_000 },
+  )
+}
+
+export function adminNotifyApplications(body: { ids: string[]; subject: string; body: string }) {
+  return apiRequest<{
+    summary: string
+    results: Array<{ sent: boolean; code: string; message: string; to: string }>
+  }>('/api/admin/applications/notify', jsonInit('POST', body), { timeoutMs: 120_000 })
 }
 
 export function adminDeleteApplication(id: string) {

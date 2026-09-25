@@ -19,10 +19,12 @@ import {
   seedContent,
 } from './routes/admin-auth'
 import {
+  bulkApplicationsAdmin,
   deleteApplicationAdmin,
   downloadApplicationFile,
   getApplicationAdmin,
   listApplicationsAdmin,
+  notifyApplicationsAdmin,
   updateApplicationAdmin,
 } from './routes/admin-applications'
 import {
@@ -36,7 +38,26 @@ import {
   updateAdminConfig,
   updateContent,
 } from './routes/admin-content'
-import { confirmInvite, getInvite, myApplication, submitApplication } from './routes/applications'
+import {
+  exportRecruitCsv,
+  getRecruitAutoTasks,
+  getRecruitBoard,
+  getRecruitMails,
+  getRecruitSettingsRoute,
+  previewRecruitAuto,
+  runRecruitAuto,
+  updateRecruitSettings,
+} from './routes/admin-recruit'
+import {
+  checkin,
+  confirmInvite,
+  getCheckinInfo,
+  getInvite,
+  getRecruitStatus,
+  myApplication,
+  submitApplication,
+} from './routes/applications'
+import { runRecruitScheduled } from './lib/recruit-auto'
 import { getRuntimeConfig } from './routes/config'
 import { sendTestMail } from './routes/mail'
 import { getBootstrap, getPublicContent, getSiteConfigRoute, health } from './routes/public'
@@ -60,6 +81,8 @@ const routes: RouteDef[] = [
   { method: 'GET', path: '/api/public/site-config', handler: getSiteConfigRoute },
   { method: 'GET', path: '/api/public/bootstrap', handler: getBootstrap },
   { method: 'GET', path: '/api/public/content/:resource', handler: getPublicContent },
+  // 本届招新的时间窗与状态：报名页据此显隐表单、显示「未到时间 / 已结束」
+  { method: 'GET', path: '/api/public/recruit', handler: getRecruitStatus },
 
   // ---- 文件（头像等）：上传需管理员，读取公开且长缓存 ----
   // 例外：applications/ 前缀是报名表（含个人信息），只有管理员下载得到，见 serveFile
@@ -75,6 +98,9 @@ const routes: RouteDef[] = [
   // 邀请函：凭证即密权，不要求登录（会话过期了也能确认加入）
   { method: 'GET', path: '/api/applications/invite/:token', handler: getInvite },
   { method: 'POST', path: '/api/applications/invite/:token', handler: confirmInvite },
+  // 扫码签到：当前是空实现（填姓名 + 学号即签到），所以不需要登录态
+  { method: 'GET', path: '/api/applications/checkin-info', handler: getCheckinInfo },
+  { method: 'POST', path: '/api/applications/checkin', handler: checkin },
 
   // ---- 教务网单点登录（授权码模式，授权服务器部署在国内 EdgeOne） ----
   { method: 'GET', path: '/api/auth/login', handler: ssoLogin },
@@ -105,8 +131,21 @@ const routes: RouteDef[] = [
   { method: 'POST', path: '/api/admin/storage/test', handler: testStorage, auth: 'admin' },
   { method: 'POST', path: '/api/admin/storage/direct-token', handler: issueDirectTokenRoute, auth: 'admin' },
 
-  // ---- 后台：招新报名管理（状态流转 + 通知邮件 + 报名表下载） ----
+  // ---- 后台：招新（周期 / 模板 / 看板 / 自动流程） ----
+  { method: 'GET', path: '/api/admin/recruit', handler: getRecruitSettingsRoute, auth: 'admin' },
+  { method: 'PUT', path: '/api/admin/recruit', handler: updateRecruitSettings, auth: 'admin' },
+  { method: 'GET', path: '/api/admin/recruit/board', handler: getRecruitBoard, auth: 'admin' },
+  { method: 'GET', path: '/api/admin/recruit/tasks', handler: getRecruitAutoTasks, auth: 'admin' },
+  { method: 'GET', path: '/api/admin/recruit/auto', handler: previewRecruitAuto, auth: 'admin' },
+  { method: 'POST', path: '/api/admin/recruit/auto', handler: runRecruitAuto, auth: 'admin' },
+  { method: 'GET', path: '/api/admin/recruit/export', handler: exportRecruitCsv, auth: 'admin' },
+  { method: 'GET', path: '/api/admin/recruit/mails', handler: getRecruitMails, auth: 'admin' },
+
+  // ---- 后台：报名明细（列表 / 详情 / 改状态 / 批量 / 批量通知信 / 下载） ----
   { method: 'GET', path: '/api/admin/applications', handler: listApplicationsAdmin, auth: 'admin' },
+  // 批量与群发走 POST，与下面的记录级路由（GET/PUT/DELETE）方法不同，不会互相截胡
+  { method: 'POST', path: '/api/admin/applications/bulk', handler: bulkApplicationsAdmin, auth: 'admin' },
+  { method: 'POST', path: '/api/admin/applications/notify', handler: notifyApplicationsAdmin, auth: 'admin' },
   { method: 'GET', path: '/api/admin/applications/:id', handler: getApplicationAdmin, auth: 'admin' },
   { method: 'PUT', path: '/api/admin/applications/:id', handler: updateApplicationAdmin, auth: 'admin' },
   { method: 'GET', path: '/api/admin/applications/:id/file', handler: downloadApplicationFile, auth: 'admin' },
@@ -168,5 +207,24 @@ export default {
   async fetch(request: Request, env: Env, exec: ExecutionContext): Promise<Response> {
     const response = await handle(request, env, exec)
     return withCors(response, request, env)
+  },
+
+  /**
+   * 定时兜底（wrangler.toml 的 [triggers] crons，默认每天一次）。
+   *
+   * 只做两件「不需要人决策、但不做会漏」的事：
+   *   1. 笔试结束过了宽限期仍未签到的同学 → 标记「未参加」（配置里可关）；
+   *   2. 全部确认完毕或已过转正截止 → 导出存档并关闭本届（配置里可关）。
+   * 需要判断的（成绩晋级、面试录取、答辩通过）一律不自动执行 ——
+   * 那要管理员在「自动流程」页看过名单再确认。
+   */
+  async scheduled(_event: ScheduledController, env: Env, exec: ExecutionContext): Promise<void> {
+    try {
+      const summary = await runRecruitScheduled(env, exec)
+      if (summary.actions.length > 0) console.log('[cron] 招新定时任务完成', summary)
+    } catch (error) {
+      // cron 失败不能影响其它定时任务，只记日志
+      console.error('[cron] 招新定时任务失败', error)
+    }
   },
 } satisfies ExportedHandler<Env>

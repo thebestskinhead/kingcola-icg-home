@@ -74,7 +74,8 @@ export async function health(ctx: RequestContext): Promise<Response> {
     },
     bindings: {
       kv: Boolean(ctx.env.CONFIG_KV),
-      r2: Boolean(ctx.env.FILES),
+      // 文件存储的接通状态看上面的 storage（按业务目标判定，S3 兼容存储同样算接通），
+      // 这里不再报告某个具体绑定，避免「没配 R2 但配了 S3」时被误判为未接通
       adminSecret: Boolean(ctx.env.SESSION_SECRET),
       studentSecret: Boolean(ctx.env.STUDENT_SESSION_SECRET),
       ssoClientSecret: Boolean(ctx.env.SSO_CLIENT_SECRET),

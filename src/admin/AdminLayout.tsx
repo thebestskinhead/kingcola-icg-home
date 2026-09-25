@@ -74,11 +74,8 @@ export function AdminLayout({
           <NavItem to="/admin" icon={<LayoutDashboard className="h-4 w-4" />} label="概览" />
 
           <div className="mt-3 px-3 pb-1 text-[11px] tracking-[0.2em] text-muted-foreground">招新</div>
-          <NavItem
-            to="/admin/applications"
-            icon={<ClipboardList className="h-4 w-4" />}
-            label="报名管理"
-          />
+          {/* 整个招新模块一个入口，内部分「看板 / 周期 / 报名 / 成绩 / 自动流程 / 模板 / 日志」页签 */}
+          <NavItem to="/admin/recruit" icon={<ClipboardList className="h-4 w-4" />} label="招新" />
 
           <div className="mt-3 px-3 pb-1 text-[11px] tracking-[0.2em] text-muted-foreground">内容管理</div>
           {RESOURCE_KEYS.map((key) => (
@@ -140,10 +137,10 @@ export function AdminLayout({
             概览
           </NavLink>
           <NavLink
-            to="/admin/applications"
+            to="/admin/recruit"
             className="whitespace-nowrap rounded-full px-3 py-1 text-xs text-foreground/70"
           >
-            报名管理
+            招新
           </NavLink>
           {RESOURCE_KEYS.map((key) => (
             <NavLink

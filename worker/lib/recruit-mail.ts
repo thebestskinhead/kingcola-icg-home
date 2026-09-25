@@ -1,213 +1,153 @@
 /**
- * 招新流程的通知邮件：笔试邀请、面试邀请、邀请函、感谢信。
+ * 招新通知邮件：把「可配置模板」渲染成真实信件并投递，同时落一条发信日志。
  *
- * 只负责「组装 MIME 文本 + 调 mailer」，不含任何传输细节 ——
- * `lib/mailer.ts` 目前是空实现（永远返回 `NOT_IMPLEMENTED`），
- * 所以这一层现在的作用是：**把触发时机、收件人、文案全部定型**，
- * 等 SMTP 真正落地时不用改任何调用点。
+ * 与 `lib/mailer.ts` 的分工：本文件负责业务语义（收件人、变量、文案、日志、失败归一化），
+ * 传输与 MIME 组装全在 mailer/smtp 里。
  *
- * 触发规则集中在 shared/recruit.ts 的 `noticeForStatus()`，本文件只管怎么写。
+ * 设计要点：
+ * - **邮件发不出去不阻断状态流转** —— 状态该改还是改，失败原因如实返回给后台，重发即可；
+ * - 模板正文与主题存在 `site_config['recruit'].templates`，由后台「邮件模板」页维护；
+ * - 每次发送（含失败）都写一行 `application_mails`，回答「他到底收到没有」。
  */
 
+import type { RecruitMailKind } from '../../shared/recruit'
+import {
+  RECRUIT_MAIL_META,
+  renderTemplate,
+  type RecruitCycleConfig,
+  type RecruitTemplates,
+} from '../../shared/recruit'
 import type { SmtpConfig } from '../../shared/mail'
-import { APPLICATION_NOTICE_META, APPLICATION_INVITE_TTL_HOURS, type ApplicationNoticeKind } from '../../shared/recruit'
+import { cnTimeToText } from '../../shared/time'
 import { invitePath, type SiteConfig } from '../../shared/types'
 import type { Env } from '../env'
 import type { ApplicationRecord } from './applications'
+import { writeMailLog } from './applications'
 import { isMailConfigured, sendMail } from './mailer'
 
 export interface NoticeContext {
-  /** 站点配置：工作室名、联系邮箱等都会进正文 */
   studio: SiteConfig
-  /** 站点原始地址（用于拼邀请函链接），形如 https://example.com */
+  cycle: RecruitCycleConfig
+  templates: RecruitTemplates
+  /** 站点原始地址，用于拼邀请函链接 */
   origin: string
 }
 
-export interface BuiltNotice {
-  kind: ApplicationNoticeKind
-  to: string
-  subject: string
-  text: string
-}
-
-/** `2026-09-28T14:00` 或 ISO 字符串 → 「2026 年 9 月 28 日 14:00」；空值返回空串 */
-export function formatWhen(value: string): string {
-  const raw = (value ?? '').trim()
-  if (!raw) return ''
-  const parsed = new Date(raw)
-  if (Number.isNaN(parsed.getTime())) return raw
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${parsed.getFullYear()} 年 ${parsed.getMonth() + 1} 月 ${parsed.getDate()} 日 ${pad(
-    parsed.getHours(),
-  )}:${pad(parsed.getMinutes())}`
-}
-
-function signature(studio: SiteConfig): string {
-  const lines = [studio.studioName]
-  if (studio.contactEmail.trim()) lines.push(studio.contactEmail.trim())
-  if (studio.contactAddress.trim()) lines.push(studio.contactAddress.trim())
-  return lines.join('\n')
-}
-
-function greeting(record: ApplicationRecord): string {
-  return `${record.name || '同学'} 同学：`
-}
-
-/** 邀请函链接（收件人凭它一次性确认加入） */
+/** 邀请函确认链接（收件人凭它一次性确认加入） */
 export function buildInviteUrl(origin: string, token: string): string {
   return `${origin.replace(/\/+$/, '')}${invitePath(token)}`
 }
 
 /**
- * 组装一封信。返回 null 表示「没有收件邮箱」这类无法发送的情况，
- * 调用方据此给出「该同学没填邮箱」的明确提示。
+ * 模板变量。时间一律用 `cnTimeToText` 转成北京时间的人话写法，
+ * 不能直接把 `2026-10-08T14:00` 塞进邮件里。
  */
+export function buildNoticeVars(record: ApplicationRecord, ctx: NoticeContext): Record<string, string> {
+  const { cycle, studio } = ctx
+  return {
+    name: record.name || '同学',
+    studentId: record.studentId,
+    cycleName: cycle.name || '本次招新',
+    writtenAt: cnTimeToText(cycle.writtenAt),
+    writtenPlace: cycle.writtenPlace,
+    interviewAt: cnTimeToText(cycle.interviewAt),
+    interviewPlace: cycle.interviewPlace,
+    defenseStart: cnTimeToText(cycle.defenseStart),
+    defenseEnd: cnTimeToText(cycle.defenseEnd),
+    onboardDeadline: cnTimeToText(cycle.onboardDeadline),
+    inviteLink: record.inviteToken ? buildInviteUrl(ctx.origin, record.inviteToken) : '',
+    studio: studio.studioName,
+    contactEmail: studio.contactEmail,
+    contactAddress: studio.contactAddress,
+  }
+}
+
+export interface BuiltNotice {
+  kind: RecruitMailKind
+  to: string
+  subject: string
+  text: string
+}
+
+/** 渲染一封信；返回 null 表示没有收件邮箱 */
 export function buildApplicationNotice(
   record: ApplicationRecord,
-  kind: ApplicationNoticeKind,
+  kind: RecruitMailKind,
   ctx: NoticeContext,
 ): BuiltNotice | null {
   const to = record.email.trim()
   if (!to) return null
 
-  const studio = ctx.studio.studioName
-  const when = formatWhen(record.writtenAt)
-  const interviewWhen = formatWhen(record.interviewAt)
-  const sign = signature(ctx.studio)
-
-  const parts: string[] = [greeting(record), '']
-
-  switch (kind) {
-    case 'written_invite': {
-      parts.push(
-        `你好！感谢你报名 ${studio}，你的报名表我们已经收到并通过初筛。`,
-        '现邀请你参加招新笔试，安排如下：',
-        '',
-        `笔试时间：${when || '待定，确定后我们会再次通知你'}`,
-        `笔试形式 / 地点：${record.writtenNote.trim() || '详见后续通知'}`,
-        '',
-        '请提前 10 分钟到达（线上笔试请提前登录）。如需调整时间，直接回复本邮件即可。',
-      )
-      break
-    }
-    case 'interview_invite': {
-      parts.push(
-        '恭喜你通过了笔试！接下来是与我们面对面的环节。',
-        '',
-        `面试时间：${interviewWhen || '待定，确定后我们会再次通知你'}`,
-        `面试地点 / 形式：${record.interviewNote.trim() || '详见后续通知'}`,
-        '',
-        '请在约定时间前 5 分钟到达。如需调整时间，直接回复本邮件即可。',
-      )
-      break
-    }
-    case 'offer': {
-      const days = Math.round(APPLICATION_INVITE_TTL_HOURS / 24)
-      parts.push(
-        '恭喜你！经过笔试、面试与预备期的考核，我们决定正式邀请你加入我们。',
-        '',
-        '请点击下面的专属链接，填写你的成员信息并确认加入：',
-        buildInviteUrl(ctx.origin, record.inviteToken),
-        '',
-        `链接 ${days} 天内有效，仅可使用一次；确认后你的信息会立即出现在官网「团队成员」页面。`,
-        '如果链接失效，或者你对加入有任何疑问，直接回复本邮件即可。',
-      )
-      break
-    }
-    case 'thanks_written': {
-      parts.push(
-        `你好。感谢你报名 ${studio}，并认真完成了这一轮笔试。`,
-        '',
-        '很遗憾，本次笔试你没能进入下一轮。招新名额有限，这个结果并不代表对你的评价。',
-        '我们后续的技术分享与公开活动依旧欢迎你参加，也欢迎下一轮招新再次报名。',
-        '',
-        '祝你学习顺利。',
-      )
-      break
-    }
-    case 'thanks_interview': {
-      parts.push(
-        `你好。感谢你报名 ${studio}，并抽出时间参加面试。`,
-        '',
-        '很遗憾，本次面试你没能进入预备期。名额有限，这个结果并不代表对你的评价。',
-        '欢迎关注我们后续的公开活动，也欢迎下一轮招新再次报名。',
-        '',
-        '祝你学习顺利。',
-      )
-      break
-    }
-    case 'thanks_probation': {
-      parts.push(
-        `你好。感谢你在 ${studio} 预备期里的投入与付出。`,
-        '',
-        '很遗憾，本次预备期答辩你没能通过。这个结果并不代表对你的评价，',
-        '希望这段时间的项目经历对你之后的成长有所帮助。',
-        '',
-        '祝你学习顺利，也欢迎之后继续与我们保持联系。',
-      )
-      break
-    }
-  }
-
-  parts.push('', sign)
-
-  const subjects: Record<ApplicationNoticeKind, string> = {
-    written_invite: `【${studio}】笔试邀请`,
-    interview_invite: `【${studio}】面试邀请`,
-    offer: `【${studio}】正式邀请函 · 请确认加入`,
-    thanks_written: `【${studio}】感谢你参加本次笔试`,
-    thanks_interview: `【${studio}】感谢你参加本次面试`,
-    thanks_probation: `【${studio}】感谢你在预备期的付出`,
-  }
-
+  const template = ctx.templates[kind]
+  const vars = buildNoticeVars(record, ctx)
   return {
     kind,
     to,
-    subject: `${subjects[kind]} · ${record.name || record.studentId}`,
-    text: parts.join('\n'),
+    subject: renderTemplate(template.subject, vars).trim() || RECRUIT_MAIL_META[kind].label,
+    text: renderTemplate(template.body, vars),
   }
 }
 
 export interface SendNoticeResult {
-  kind: ApplicationNoticeKind
+  kind: RecruitMailKind
   /** 邮件服务是否真的收下了这封信 */
   sent: boolean
-  /** 失败原因码：NO_RECIPIENT / NOT_CONFIGURED / NOT_IMPLEMENTED / … */
+  /** 跳过或失败的原因码：NO_RECIPIENT / TEMPLATE_DISABLED / NOT_CONFIGURED / … */
   code: string
   message: string
   to: string
 }
 
 /**
- * 发一封信。**任何失败都只返回结果、不抛异常** —— 状态流转不能被邮件拖垮：
- * 邮件没发出去，管理员在后台会看到明确的失败原因，重发即可。
+ * 发一封信并记日志。**任何失败都只返回结果、不抛异常** —— 状态流转不能被邮件拖垮。
  */
 export async function sendApplicationNotice(
   env: Env,
   config: SmtpConfig,
   record: ApplicationRecord,
-  kind: ApplicationNoticeKind,
+  kind: RecruitMailKind,
   ctx: NoticeContext,
+  actor = 'system',
 ): Promise<SendNoticeResult> {
+  const label = RECRUIT_MAIL_META[kind].label
+
   const built = buildApplicationNotice(record, kind, ctx)
   if (!built) {
-    return {
+    return { kind, sent: false, code: 'NO_RECIPIENT', message: '该报名记录没有邮箱，无法发送邮件', to: '' }
+  }
+
+  const log = async (result: SendNoticeResult) => {
+    await writeMailLog(env, {
+      applicationId: record.id,
+      kind,
+      recipient: result.to,
+      subject: built.subject,
+      ok: result.sent,
+      code: result.code,
+      message: result.message,
+      actor,
+    })
+    return result
+  }
+
+  if (!ctx.templates[kind].enabled) {
+    return log({
       kind,
       sent: false,
-      code: 'NO_RECIPIENT',
-      message: '该报名记录没有邮箱，无法发送邮件',
-      to: '',
-    }
+      code: 'TEMPLATE_DISABLED',
+      message: `${label}模板已停用，未发送`,
+      to: built.to,
+    })
   }
 
   if (!isMailConfigured(env, config)) {
-    return {
+    return log({
       kind,
       sent: false,
       code: 'NOT_CONFIGURED',
-      message: '邮件通道未接通（系统设置 → 邮件），本封信未发送',
+      message: '邮件通道未接通（系统设置 → 邮件通知），本封信未发送',
       to: built.to,
-    }
+    })
   }
 
   const result = await sendMail(env, config, {
@@ -218,20 +158,60 @@ export async function sendApplicationNotice(
   })
 
   if (!result.ok) {
-    return {
+    return log({
       kind,
       sent: false,
       code: result.code,
-      message: `${APPLICATION_NOTICE_META[kind].label}发送失败：${result.message}`,
+      message: `${label}发送失败：${result.message}`,
       to: built.to,
-    }
+    })
   }
 
-  return {
+  return log({
     kind,
     sent: true,
     code: 'OK',
-    message: `${APPLICATION_NOTICE_META[kind].label}已发送至 ${built.to}`,
+    message: `${label}已发送至 ${built.to}`,
     to: built.to,
+  })
+}
+
+/** 批量发同一封信（生成名单、录取时一次发几十封）；串行发送，避免把 SMTP 连接打满 */
+export async function sendApplicationNotices(
+  env: Env,
+  config: SmtpConfig,
+  records: Array<{ record: ApplicationRecord; kind: RecruitMailKind }>,
+  ctx: NoticeContext,
+  actor = 'system',
+): Promise<SendNoticeResult[]> {
+  const results: SendNoticeResult[] = []
+  for (const item of records) {
+    results.push(await sendApplicationNotice(env, config, item.record, item.kind, ctx, actor))
   }
+  return results
+}
+
+/** 结果汇总成人话，后台弹窗直接用 */
+export function summarizeMailResults(results: SendNoticeResult[]): string {
+  if (results.length === 0) return '没有需要发送的邮件'
+  const sent = results.filter((r) => r.sent).length
+  const failed = results.length - sent
+  const reason = results.find((r) => !r.sent)
+  const parts = [`已发送 ${sent} 封`]
+  if (failed > 0) {
+    parts.push(`${failed} 封未发出`)
+    if (reason) parts.push(`（${reason.code}：${reason.message}）`)
+  }
+  return parts.join('，')
+}
+
+/** 供后台预览：告诉调用方这封信会不会真的发出去 */
+export function noticePreviewHint(kind: RecruitMailKind, ctx: NoticeContext): string {
+  if (!ctx.templates[kind].enabled) return '模板已停用，执行时不会发送'
+  return RECRUIT_MAIL_META[kind].trigger
+}
+
+/** 判断一个字符串是不是合法的通知类型（接口入参校验用） */
+export function isNoticeKind(value: string): value is RecruitMailKind {
+  return Object.prototype.hasOwnProperty.call(RECRUIT_MAIL_META, value)
 }
