@@ -8,7 +8,7 @@ import { Dashboard } from './Dashboard'
 import { ContentPage } from './ContentPage'
 import { AuditPage } from './AuditPage'
 import { SettingsPage } from './SettingsPage'
-import { DemoEventDrivenPage } from './recruit/DemoEventDrivenPage'
+import { RecruitPage } from './recruit/RecruitPage'
 import { StoragePage } from './StoragePage'
 
 export function AdminApp() {
@@ -57,9 +57,9 @@ export function AdminApp() {
         <Routes>
           <Route index element={<Dashboard />} />
           {/* 招新模块：一页到底（休眠 → 启动 → 备招 → 报名 → 笔试 → 面试 → 答辩 → 转正 → 归档）。
-              阶段的开与关全部由管理员点击推进，页面不出现任何时间字段。
-              旧版按阶段拆开的页面已归档到 backup/recruit-legacy/，功能逐块并进来后再删备份。 */}
-          <Route path="recruit" element={<DemoEventDrivenPage />} />
+              阶段的开与关全部由管理员点击推进，页面不出现任何时间字段；
+              内部四个视图：流程 / 名单 / 邮件日志 / 设置。 */}
+          <Route path="recruit" element={<RecruitPage />} />
           <Route path="content/:resource" element={<ContentPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="storage" element={<StoragePage />} />

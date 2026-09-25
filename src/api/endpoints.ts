@@ -466,16 +466,34 @@ export interface ManualApplicationInput {
   email?: string
   phone?: string
   qq?: string
+  /**
+   * apply（默认）= 补录进报名阶段，不要求报名表、联系方式可选；
+   * written = 笔试现场补录，邮箱 / 手机 / QQ / 报名表都要给，录入即视为已参加笔试。
+   */
+  stage?: 'apply' | 'written'
 }
 
 /**
  * 补录未报名考生（现场来考的人）。
- * 不要求报名表文件，联系方式全部可选 —— 人已经在考场里了，缺什么后补。
+ * 带报名表时（笔试现场补录）自动改走 multipart；不带就是普通 JSON。
  */
-export function adminCreateApplication(body: ManualApplicationInput) {
+export function adminCreateApplication(body: ManualApplicationInput, file?: File | null) {
+  if (file) {
+    const form = new FormData()
+    for (const [key, value] of Object.entries(body)) {
+      if (value !== undefined && value !== null && value !== '') form.append(key, String(value))
+    }
+    form.append('file', file)
+    return apiRequest<{ application: AdminApplication }>(
+      '/api/admin/applications',
+      { method: 'POST', body: form },
+      { timeoutMs: 120_000 },
+    )
+  }
   return apiRequest<{ application: AdminApplication }>(
     '/api/admin/applications',
     jsonInit('POST', body),
+    { timeoutMs: 60_000 },
   )
 }
 

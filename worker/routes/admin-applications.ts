@@ -16,8 +16,12 @@
  * 那里会把名单、邮件与整届状态一次性处理完；这里的单条改动主要用于改判与补漏。
  */
 
+import { formatLimit } from '../../shared/resources'
 import {
   applicationLabel,
+  APPLICATION_DOC_LIMIT,
+  APPLICATION_DOC_SCOPE,
+  applicationDocFileName,
   APPLICATION_EMAIL_PATTERN,
   APPLICATION_PHONE_PATTERN,
   APPLICATION_QQ_PATTERN,
@@ -59,7 +63,8 @@ import {
 } from '../lib/recruit-mail'
 import { getSiteConfig, writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
-import { deleteStoredFile, getStorage, resolveFileRef } from '../lib/storage'
+import { deleteStoredFile, getStorage, resolveFileRef, storageReady } from '../lib/storage'
+import { buildObjectKey, sniffDocument } from '../lib/uploads'
 import { resolveRuntimeConfig } from './config'
 
 function actorOf(ctx: RequestContext): string {
@@ -283,23 +288,52 @@ interface CreateApplicationBody {
   email?: string
   phone?: string
   qq?: string
+  /** apply = 补录进报名阶段（默认）；written = 笔试现场补录，录入即视为已参加笔试 */
+  stage?: string
 }
 
 /**
  * 手动补录考生：**没有在官网报名、但现场来考的人**。
  *
- * 开放参加制下这种人是常态（看到海报就来了），签到页也允许他们直接填姓名学号，
- * 但那样他们的信息不会进名单、后面发通知也找不到人 —— 所以给管理员一个补录入口。
+ * 两种情形共用一个入口，靠 `stage` 区分：
+ *   - 报名阶段的补录（默认）：人已经在现场了，不要求报名表、联系方式全部可选；
+ *   - 笔试现场补录（stage=written）：**邮箱 / 手机 / QQ / 报名表都必填** ——
+ *     他跳过了报名，材料只能现场补齐，否则后面发通知找不到人；
+ *     录入即视为已参加笔试（直接写好签到时间），不会被「结束笔试」的缺考扫描误伤。
  *
- * 与官网报名的差别（刻意的）：
- *   - **不要求报名表文件**：人已经站在考场里了，材料可以后补或不要；
- *   - 联系方式全部可选（签到页只要求姓名 + 学号，邮箱可能是后问到的）；
- *   - `source = 'manual'`，名单里会带「补录」标记，一眼能和官网报名区分开。
- * 补录完他们就处在报名阶段，确认笔试名单时和官网报名的人一起推进、一起收邀请函。
+ * 共同点：`source = 'manual'`，名单里带「补录」标记，一眼能和官网报名区分开。
+ * 请求体既可以是 JSON（无附件），也可以是 multipart（带报名表，字段同上 + file）。
  */
 export async function createApplicationAdmin(ctx: RequestContext): Promise<Response> {
-  const body = await readJsonBody<CreateApplicationBody>(ctx.request)
-  if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
+  const contentType = ctx.request.headers.get('content-type') ?? ''
+  const multipart = contentType.includes('multipart/form-data')
+
+  let body: CreateApplicationBody = {}
+  let file: File | null = null
+
+  if (multipart) {
+    let form: FormData
+    try {
+      form = await ctx.request.formData()
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return fail(400, 'INVALID_BODY', `请求必须是 multipart/form-data 表单：${reason}`)
+    }
+    body = {
+      name: String(form.get('name') ?? ''),
+      studentId: String(form.get('studentId') ?? ''),
+      email: String(form.get('email') ?? ''),
+      phone: String(form.get('phone') ?? ''),
+      qq: String(form.get('qq') ?? ''),
+      stage: String(form.get('stage') ?? ''),
+    }
+    const candidate = form.get('file')
+    if (candidate instanceof File && candidate.size > 0) file = candidate
+  } else {
+    const parsed = await readJsonBody<CreateApplicationBody>(ctx.request)
+    if (!parsed) return fail(400, 'INVALID_BODY', '请求体必须是 JSON 或 multipart 表单')
+    body = parsed
+  }
 
   const name = String(body.name ?? '').trim()
   const studentId = String(body.studentId ?? '').trim()
@@ -309,7 +343,12 @@ export async function createApplicationAdmin(ctx: RequestContext): Promise<Respo
   const email = String(body.email ?? '').trim()
   const phone = String(body.phone ?? '').trim()
   const qq = String(body.qq ?? '').trim()
-  // 可选字段只在填了的时候校验格式，避免「不知道邮箱就补不了录」
+  const walkIn = String(body.stage ?? '').trim() === 'written'
+
+  // 报名阶段的补录只校验「填了的」字段；笔试现场补录要求三样都齐（否则后面根本联系不上人）
+  if (walkIn && (!email || !phone || !qq)) {
+    return fail(400, 'VALIDATION_FAILED', '笔试现场补录需要邮箱、手机、QQ 都填上（后面发通知要用）')
+  }
   if (email && !APPLICATION_EMAIL_PATTERN.test(email)) {
     return fail(400, 'VALIDATION_FAILED', '邮箱格式不正确')
   }
@@ -318,6 +357,37 @@ export async function createApplicationAdmin(ctx: RequestContext): Promise<Respo
   }
   if (qq && !APPLICATION_QQ_PATTERN.test(qq)) {
     return fail(400, 'VALIDATION_FAILED', 'QQ 号应为 5–12 位数字')
+  }
+  if (walkIn && !file) {
+    return fail(400, 'NO_FILE', '笔试现场补录需要上传他的报名表（PDF / DOCX）')
+  }
+
+  // 报名表（可选，但带着就必须是真文件）：与官网报名同一套校验与存桶规则
+  let doc = { fileUrl: '', fileName: '', fileSize: 0 }
+  let uploadedKey = ''
+  if (file) {
+    if (file.size > APPLICATION_DOC_LIMIT) {
+      return fail(413, 'TOO_LARGE', `报名表不能超过 ${formatLimit(APPLICATION_DOC_LIMIT)}`)
+    }
+    if (!/\.(pdf|docx)$/i.test(file.name || '')) {
+      return fail(415, 'UNSUPPORTED_TYPE', '仅支持 .pdf 或 .docx 文件')
+    }
+    const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+    const kind = sniffDocument(head, file.name)
+    if (!kind) {
+      return fail(415, 'UNSUPPORTED_TYPE', '文件校验失败：仅支持 PDF / DOCX 格式的真实文件，仅改后缀无效')
+    }
+    if (!(await storageReady(ctx.env, 'applications'))) {
+      return fail(503, 'STORAGE_UNAVAILABLE', '对象存储未接通，暂时无法保存报名表')
+    }
+    const storage = await getStorage(ctx.env, 'applications')
+    uploadedKey = buildObjectKey(APPLICATION_DOC_SCOPE, file.name || 'application', kind.ext)
+    await storage.put(uploadedKey, file, { contentType: kind.mime })
+    doc = {
+      fileUrl: storage.objectUrl(uploadedKey),
+      fileName: applicationDocFileName(name, studentId, kind.ext),
+      fileSize: file.size,
+    }
   }
 
   let created
@@ -328,17 +398,29 @@ export async function createApplicationAdmin(ctx: RequestContext): Promise<Respo
       email,
       phone,
       qq,
-      fileUrl: '',
-      fileName: '',
-      fileSize: 0,
+      ...doc,
       source: 'manual',
     })
+
+    if (walkIn) {
+      const now = new Date().toISOString()
+      // 录入即视为已参加：写好签到时间，结束笔试时不会被判缺考
+      const updated = await updateApplication(ctx.env, created.id, {
+        stage: 'written',
+        result: 'attended',
+        writtenCheckinAt: now,
+        stageChangedAt: now,
+      })
+      if (updated) created = updated
+    }
   } catch (error) {
+    // 落库失败就把刚传上去的报名表删掉，别在桶里留孤儿对象
+    if (uploadedKey) await deleteStoredFile(ctx.env, doc.fileUrl || uploadedKey).catch(() => {})
     // student_id 有唯一约束，撞上就是这位同学已经存在（官网报过或已被补录过）
     if (await getApplicationByStudentId(ctx.env, studentId)) {
       return fail(409, 'ALREADY_EXISTS', '这个学号已经在名单里了，无需重复补录')
     }
-    console.error('[applications] 补录失败', { studentId, error })
+    console.error('[applications] 补录失败', { studentId, walkIn, error })
     return fail(500, 'CREATE_FAILED', '补录失败，请稍后重试')
   }
 
@@ -347,7 +429,7 @@ export async function createApplicationAdmin(ctx: RequestContext): Promise<Respo
     action: 'create',
     resource: 'applications',
     targetId: created.id,
-    detail: `补录考生 ${name}（${studentId}）`,
+    detail: `${walkIn ? '笔试现场补录' : '补录考生'} ${name}（${studentId}）${doc.fileName ? ` 报名表 ${doc.fileName}` : ''}`,
     ...requestMeta(ctx),
   })
 

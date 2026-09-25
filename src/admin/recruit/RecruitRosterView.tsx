@@ -1,18 +1,24 @@
 /**
- * 名单视图（演示）。
+ * 名单：跨阶段的全量数据入口 —— 筛选、搜索、导出 CSV、批量处理、单人详情。
  *
- * 对应旧版的「报名管理」页，是跨阶段的全量数据入口：筛选 / 搜索 / 导出 / 批量处理 / 单人详情。
- * 流程视图只露出「当前这一步该做的事」，翻旧账、找人、导数据都来这里。
+ * 流程页只露出「当前这一步该做的事」，翻旧账、找人、导数据都来这里。
+ * 成绩与评语是内部评审记录，只在详情里改（就地编辑容易误触）。
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   canMoveStage,
   nextStageOf,
   prevStageOf,
   RECRUIT_MAIL_KINDS,
+  RECRUIT_MAIL_META,
   RECRUIT_STAGE_LABELS,
+  RECRUIT_STAGES,
+  STAGE_RESULTS,
+  type CheckinStage,
   type RecruitMailKind,
+  type RecruitResult,
+  type RecruitStage,
 } from '@shared/recruit'
 import {
   AlertDialog,
@@ -52,40 +58,25 @@ import {
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import {
-  Check,
-  Copy,
-  Download,
-  FileText,
-  Mail,
-  Search,
-  Send,
-  Trash2,
-  UserMinus,
-  UserX,
-} from 'lucide-react'
+import { Check, Copy, Download, FileText, Loader2, Mail, Search, Send, Trash2, UserMinus, UserX } from 'lucide-react'
 import { toast } from 'sonner'
 import {
-  appResultLabel,
-  appStageLabel,
-  appStatusLabel,
-  CHECKIN_STAGE_LABELS,
-  DEMO_MAIL_META,
-  downloadCsv,
-  formatSize,
-  RESULT_OPTION_LABELS,
-  RESULT_OPTIONS,
-  toExportRow,
-  type MockApp,
-  type QrStage,
-  type StageKey,
-} from './demo-model'
-import type { DemoRecruit } from './useDemoRecruit'
+  adminGetApplication,
+  applicationFileUrl,
+  recruitExportUrl,
+  type AdminApplication,
+  type MailLogRow,
+} from '@/api/endpoints'
+import { downloadFile, formatSize, formatTime, resultLabel } from './recruit-ui'
+import type { RecruitAdmin } from './useRecruitAdmin'
 
-const STAGES: StageKey[] = ['apply', 'written', 'interview', 'defense', 'onboard']
+/** 该阶段的成绩/签到字段（报名与转正没有） */
+function examFieldOf(stage: RecruitStage): CheckinStage | null {
+  return stage === 'written' || stage === 'interview' || stage === 'defense' ? stage : null
+}
 
 /** 关键词搜索：姓名 / 学号 / 邮箱 / 手机 / QQ 都能命中 */
-function matches(app: MockApp, query: string): boolean {
+function matches(app: AdminApplication, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
   return [app.name, app.studentId, app.email, app.phone, app.qq].some((field) =>
@@ -93,24 +84,24 @@ function matches(app: MockApp, query: string): boolean {
   )
 }
 
-export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
-  const [stage, setStage] = useState<StageKey>(demo.currentStage === 'prepare' || demo.currentStage === 'archive' ? 'apply' : demo.currentStage)
+export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
+  // 默认停在当前阶段（备招与休眠期没有对应阶段，就落在报名）
+  const [stage, setStage] = useState<RecruitStage>(admin.timelineKey === 'prepare' ? 'apply' : admin.timelineKey)
   const [result, setResult] = useState<string>('all')
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [detailId, setDetailId] = useState<string | null>(null)
   const [notifyOpen, setNotifyOpen] = useState(false)
-  const [deleting, setDeleting] = useState<MockApp | null>(null)
+  const [deleting, setDeleting] = useState<AdminApplication | null>(null)
 
-  const stageList = useMemo(() => demo.apps.filter((app) => app.stage === stage), [demo.apps, stage])
+  const stageList = useMemo(() => admin.apps.filter((app) => app.stage === stage), [admin.apps, stage])
   const filtered = useMemo(
     () => stageList.filter((app) => (result === 'all' || app.result === result) && matches(app, query)),
     [stageList, result, query],
   )
-  const detail = detailId ? (demo.apps.find((app) => app.id === detailId) ?? null) : null
+  const detail = detailId ? (admin.apps.find((app) => app.id === detailId) ?? null) : null
   const allChecked = filtered.length > 0 && filtered.every((app) => selected.has(app.id))
-  const checkinStage: QrStage | null =
-    stage === 'written' || stage === 'interview' || stage === 'defense' ? stage : null
+  const checkinStage = examFieldOf(stage)
 
   const toggleAll = () =>
     setSelected((prev) => {
@@ -130,12 +121,6 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
 
   const selectedIds = [...selected]
 
-  const exportCsv = () => {
-    const today = new Date().toISOString().slice(0, 10)
-    downloadCsv(filtered.map(toExportRow), `报名名单-${RECRUIT_STAGE_LABELS[stage]}-${today}.csv`)
-    toast.success(`已导出 ${filtered.length} 条记录`, { description: '列与真实导出完全一致，可直接给评审。' })
-  }
-
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -145,7 +130,22 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
             跨阶段的全量数据：筛选、搜索、导出 CSV，勾选后批量处理，点开某个人看全部材料与发信记录。
           </p>
         </div>
-        <Button variant="outline" className="gap-1.5" onClick={exportCsv}>
+        <Button
+          variant="outline"
+          className="gap-1.5"
+          onClick={() => {
+            const today = new Date().toISOString().slice(0, 10)
+            downloadFile(
+              recruitExportUrl({
+                stage,
+                result: result === 'all' ? undefined : result,
+                q: query.trim() || undefined,
+              }),
+              `报名名单-${RECRUIT_STAGE_LABELS[stage]}-${today}.csv`,
+            )
+            toast.success(`正在导出 ${filtered.length} 条记录`)
+          }}
+        >
           <Download className="h-4 w-4" /> 导出 CSV（当前筛选 {filtered.length} 条）
         </Button>
       </div>
@@ -153,8 +153,8 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
       {/* 阶段与结果筛选 */}
       <div className="space-y-3 rounded-xl border border-border bg-card px-5 py-4">
         <div className="flex flex-wrap items-center gap-1.5">
-          {STAGES.map((item) => {
-            const count = demo.apps.filter((app) => app.stage === item).length
+          {RECRUIT_STAGES.map((item) => {
+            const count = admin.apps.filter((app) => app.stage === item).length
             return (
               <button
                 key={item}
@@ -186,7 +186,7 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
-          {(['all', ...RESULT_OPTIONS[stage]] as string[]).map((item) => {
+          {(['all', ...STAGE_RESULTS[stage]] as string[]).map((item) => {
             const count =
               item === 'all' ? stageList.length : stageList.filter((app) => app.result === item).length
             return (
@@ -198,7 +198,7 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
                   result === item ? 'bg-accent/15 text-accent' : 'text-muted-foreground hover:bg-secondary',
                 )}
               >
-                {item === 'all' ? '全部' : RESULT_OPTION_LABELS[item]} {count}
+                {item === 'all' ? '全部' : resultLabel(item as RecruitResult)} {count}
               </button>
             )
           })}
@@ -210,14 +210,35 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-accent/40 bg-accent/5 px-4 py-2.5 text-xs">
           <span className="font-medium">已勾选 {selected.size} 人</span>
           {checkinStage && (
-            <Button size="sm" variant="outline" className="gap-1" onClick={() => demo.bulkCheckin(selectedIds)}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1"
+              onClick={async () => {
+                if (await admin.bulk(selectedIds, 'checkin', checkinStage)) setSelected(new Set())
+              }}
+            >
               <Check className="h-3.5 w-3.5" /> 标记已签到
             </Button>
           )}
-          <Button size="sm" variant="outline" className="gap-1" onClick={() => demo.bulkAbsent(selectedIds)}>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1"
+            onClick={async () => {
+              if (await admin.bulk(selectedIds, 'absent')) setSelected(new Set())
+            }}
+          >
             <UserX className="h-3.5 w-3.5" /> 标记未参加
           </Button>
-          <Button size="sm" variant="outline" className="gap-1" onClick={() => demo.bulkWithdraw(selectedIds)}>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1"
+            onClick={async () => {
+              if (await admin.bulk(selectedIds, 'withdraw')) setSelected(new Set())
+            }}
+          >
             <UserMinus className="h-3.5 w-3.5" /> 退出报名
           </Button>
           <Button size="sm" variant="outline" className="gap-1" onClick={() => setNotifyOpen(true)}>
@@ -281,11 +302,13 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
                   {app.phone}
                 </TableCell>
                 {checkinStage && (
-                  <TableCell className="text-xs">{app.scores[checkinStage] || '—'}</TableCell>
+                  <TableCell className="text-xs">
+                    {app[`${checkinStage}Score` as 'writtenScore' | 'interviewScore' | 'defenseScore'] || '—'}
+                  </TableCell>
                 )}
                 {checkinStage && (
                   <TableCell className="text-xs">
-                    {app.checkins[checkinStage] ? (
+                    {app[`${checkinStage}CheckinAt` as 'writtenCheckinAt' | 'interviewCheckinAt' | 'defenseCheckinAt'] ? (
                       <span className="inline-flex items-center gap-1 text-emerald-700">
                         <Check className="h-3.5 w-3.5" /> 已签到
                       </span>
@@ -294,7 +317,7 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
                     )}
                   </TableCell>
                 )}
-                <TableCell className="text-xs">{appStatusLabel(app)}</TableCell>
+                <TableCell className="text-xs">{app.statusLabel}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-1">
                     <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setDetailId(app.id)}>
@@ -305,11 +328,7 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
                         size="sm"
                         variant="ghost"
                         className="h-7 gap-1 text-xs"
-                        onClick={() =>
-                          toast.success('开始下载报名表', {
-                            description: `${app.fileName} · ${formatSize(app.fileSize)}（仅管理员可下载）`,
-                          })
-                        }
+                        onClick={() => window.open(applicationFileUrl(app.id), '_blank')}
                       >
                         <FileText className="h-3.5 w-3.5" /> 报名表
                       </Button>
@@ -330,7 +349,7 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
             {filtered.length === 0 && (
               <TableRow>
                 <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
-                  没有符合条件的记录
+                  {admin.loading ? '正在加载…' : '没有符合条件的记录'}
                 </TableCell>
               </TableRow>
             )}
@@ -338,16 +357,24 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
         </Table>
       </div>
 
-      {detail && <AppDetailDialog key={detail.id} demo={demo} app={detail} onClose={() => setDetailId(null)} />}
+      {detail && (
+        <AppDetailDialog
+          key={detail.id}
+          admin={admin}
+          app={detail}
+          onClose={() => setDetailId(null)}
+        />
+      )}
 
       <NotifyDialog
         open={notifyOpen}
         count={selected.size}
         onClose={() => setNotifyOpen(false)}
-        onSend={(subject, body) => {
-          demo.notify(selectedIds, subject, body)
-          setNotifyOpen(false)
-          setSelected(new Set())
+        onSend={async (subject, body) => {
+          if (await admin.notify(selectedIds, subject, body)) {
+            setNotifyOpen(false)
+            setSelected(new Set())
+          }
         }}
       />
 
@@ -363,8 +390,8 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (deleting) demo.deleteApp(deleting)
+              onClick={async () => {
+                if (deleting) await admin.deleteApp(deleting.id, deleting.name)
                 setDeleting(null)
               }}
             >
@@ -377,7 +404,7 @@ export function DemoRosterPage({ demo }: { demo: DemoRecruit }) {
   )
 }
 
-/** 群发通知：主题支持 {name} 等变量，正文由后端按模板渲染后逐人发出 */
+/** 群发通知：主题与正文都支持 {变量}，由后端逐人渲染 */
 function NotifyDialog({
   open,
   count,
@@ -387,12 +414,13 @@ function NotifyDialog({
   open: boolean
   count: number
   onClose: () => void
-  onSend: (subject: string, body: string) => void
+  onSend: (subject: string, body: string) => Promise<void> | void
 }) {
   const [subject, setSubject] = useState('【拾光工作室】招新通知 · {name}')
   const [body, setBody] = useState(
     '{name} 同学：\n\n你好，关于本次招新有一则通知：\n（在这里写内容，可用 {studio} 等变量）\n\n拾光工作室',
   )
+  const [sending, setSending] = useState(false)
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
@@ -418,8 +446,19 @@ function NotifyDialog({
           <Button variant="ghost" onClick={onClose}>
             取消
           </Button>
-          <Button className="gap-1.5" onClick={() => onSend(subject, body)} disabled={!subject.trim()}>
-            <Send className="h-4 w-4" /> 发送
+          <Button
+            className="gap-1.5"
+            disabled={sending || !subject.trim()}
+            onClick={async () => {
+              setSending(true)
+              try {
+                await onSend(subject, body)
+              } finally {
+                setSending(false)
+              }
+            }}
+          >
+            {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />} 发送
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -429,41 +468,52 @@ function NotifyDialog({
 
 /** 单人详情：状态流转、材料、成绩与评语、补发邮件、发信记录 */
 function AppDetailDialog({
-  demo,
+  admin,
   app,
   onClose,
 }: {
-  demo: DemoRecruit
-  app: MockApp
+  admin: RecruitAdmin
+  app: AdminApplication
   onClose: () => void
 }) {
-  const [scores, setScores] = useState(app.scores)
-  const [notes, setNotes] = useState(app.notes)
-  const [remark, setRemark] = useState(app.remark)
+  const [scores, setScores] = useState({
+    writtenScore: app.writtenScore,
+    interviewScore: app.interviewScore,
+    defenseScore: app.defenseScore,
+  })
+  const [notes, setNotes] = useState({
+    writtenNote: app.writtenNote,
+    interviewNote: app.interviewNote,
+    defenseNote: app.defenseNote,
+  })
+  const [remark, setRemark] = useState(app.note)
   const [mailKind, setMailKind] = useState<RecruitMailKind | ''>('')
+  const [mails, setMails] = useState<MailLogRow[]>([])
+  const [saving, setSaving] = useState(false)
 
-  const checkinStage: QrStage | null =
-    app.stage === 'written' || app.stage === 'interview' || app.stage === 'defense' ? app.stage : null
+  const checkinStage = examFieldOf(app.stage)
   const prev = prevStageOf(app.stage)
   const next = nextStageOf(app.stage)
-  const mails = demo.mails.filter((mail) => mail.appId === app.id)
+  const checkedIn = checkinStage ? Boolean(app[`${checkinStage}CheckinAt` as keyof AdminApplication]) : false
 
-  const save = () => {
-    demo.patch(app.id, { scores, notes, remark })
-    toast.success('已保存', { description: '成绩与评语只有内部可见，不会发给同学。' })
-  }
+  // 详情里的发信记录按人拉（比从全局日志里筛更准，也不受 200 条上限影响）
+  useEffect(() => {
+    adminGetApplication(app.id)
+      .then((detail) => setMails(detail.mails))
+      .catch(() => setMails([]))
+  }, [app.id])
 
-  const copyInvite = async () => {
+  const save = async () => {
+    setSaving(true)
     try {
-      await navigator.clipboard.writeText(app.inviteUrl)
-      toast.success('邀请链接已复制')
-    } catch {
-      toast.error('复制失败，请手动复制')
+      await admin.updateApp(app.id, { ...scores, ...notes, note: remark })
+    } finally {
+      setSaving(false)
     }
   }
 
   return (
-    <Dialog open onOpenChange={(next) => !next && onClose()}>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex flex-wrap items-center gap-2">
@@ -476,7 +526,7 @@ function AppDetailDialog({
             )}
           </DialogTitle>
           <DialogDescription>
-            {appStageLabel(app)} · {appResultLabel(app)} · {appStatusLabel(app)}
+            {app.stageLabel} · {app.resultLabel} · {app.statusLabel}
           </DialogDescription>
         </DialogHeader>
 
@@ -489,7 +539,7 @@ function AppDetailDialog({
                 size="sm"
                 variant="outline"
                 disabled={!prev || !canMoveStage(app.stage, prev)}
-                onClick={() => prev && demo.patch(app.id, { stage: prev, result: '' })}
+                onClick={() => prev && void admin.updateApp(app.id, { stage: prev, result: '' })}
               >
                 退回{prev ? RECRUIT_STAGE_LABELS[prev] : '—'}
               </Button>
@@ -497,18 +547,23 @@ function AppDetailDialog({
                 size="sm"
                 variant="outline"
                 disabled={!next || !canMoveStage(app.stage, next)}
-                onClick={() => next && demo.patch(app.id, { stage: next, result: '' })}
+                onClick={() => next && void admin.updateApp(app.id, { stage: next, result: '' })}
               >
                 推进到{next ? RECRUIT_STAGE_LABELS[next] : '—'}
               </Button>
-              <Select value={app.result || 'pending'} onValueChange={(value) => demo.patch(app.id, { result: value === 'pending' ? '' : (value as MockApp['result']) })}>
+              <Select
+                value={app.result || 'pending'}
+                onValueChange={(value) =>
+                  void admin.updateApp(app.id, { result: value === 'pending' ? '' : (value as RecruitResult) })
+                }
+              >
                 <SelectTrigger className="h-8 w-28 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {RESULT_OPTIONS[app.stage].map((item) => (
+                  {STAGE_RESULTS[app.stage].map((item) => (
                     <SelectItem key={item || 'pending'} value={item || 'pending'}>
-                      {RESULT_OPTION_LABELS[item]}
+                      {resultLabel(item)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -519,11 +574,11 @@ function AppDetailDialog({
                   variant="outline"
                   className="gap-1"
                   onClick={() =>
-                    demo.patch(app.id, { checkins: { ...app.checkins, [checkinStage]: !app.checkins[checkinStage] } })
+                    void admin.updateApp(app.id, { checkin: { stage: checkinStage, value: !checkedIn } })
                   }
                 >
                   <Check className="h-3.5 w-3.5" />
-                  {app.checkins[checkinStage] ? '取消签到' : '标记签到'}
+                  {checkedIn ? '取消签到' : '标记签到'}
                 </Button>
               )}
               {app.result !== 'withdrawn' && (
@@ -531,13 +586,23 @@ function AppDetailDialog({
                   size="sm"
                   variant="ghost"
                   className="text-destructive"
-                  onClick={() => demo.patch(app.id, { result: 'withdrawn' })}
+                  onClick={() => void admin.updateApp(app.id, { result: 'withdrawn' })}
                 >
                   退出报名
                 </Button>
               )}
               {app.inviteUrl && (
-                <Button size="sm" variant="outline" className="gap-1" onClick={() => void copyInvite()}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1"
+                  onClick={() => {
+                    void navigator.clipboard
+                      .writeText(app.inviteUrl)
+                      .then(() => toast.success('邀请链接已复制'))
+                      .catch(() => toast.error('复制失败，请手动复制'))
+                  }}
+                >
                   <Copy className="h-3.5 w-3.5" /> 复制邀请链接
                 </Button>
               )}
@@ -551,7 +616,7 @@ function AppDetailDialog({
               <div>邮箱：{app.email || '—'}</div>
               <div>手机：{app.phone || '—'}</div>
               <div>QQ：{app.qq || '—'}</div>
-              <div>报名时间：{demo.formatTime(app.createdAt)}</div>
+              <div>报名时间：{formatTime(app.createdAt ?? '')}</div>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-xs">
               <FileText className="h-3.5 w-3.5 text-muted-foreground" />
@@ -563,7 +628,7 @@ function AppDetailDialog({
                     size="sm"
                     variant="outline"
                     className="h-7 gap-1 text-xs"
-                    onClick={() => toast.success('开始下载报名表', { description: '报名表是私有文件，只有管理员能下载。' })}
+                    onClick={() => window.open(applicationFileUrl(app.id), '_blank')}
                   >
                     <Download className="h-3 w-3" /> 下载
                   </Button>
@@ -578,23 +643,28 @@ function AppDetailDialog({
           <section className="rounded-lg border border-border px-4 py-3">
             <h3 className="mb-2 text-xs font-semibold text-muted-foreground">成绩与评语（内部可见）</h3>
             <div className="grid gap-2 sm:grid-cols-3">
-              {(['written', 'interview', 'defense'] as const).map((field) => (
-                <div key={field} className="grid gap-1.5">
-                  <Label className="text-xs">{CHECKIN_STAGE_LABELS[field]}成绩</Label>
-                  <Input
-                    className="h-8 text-xs"
-                    value={scores[field]}
-                    placeholder="如 78"
-                    onChange={(event) => setScores({ ...scores, [field]: event.target.value })}
-                  />
-                  <Input
-                    className="h-8 text-xs"
-                    value={notes[field]}
-                    placeholder={field === 'interview' ? '面试评语' : '阅卷备注'}
-                    onChange={(event) => setNotes({ ...notes, [field]: event.target.value })}
-                  />
-                </div>
-              ))}
+              {RECRUIT_STAGES.filter((item) => examFieldOf(item)).map((item) => {
+                const key = item as CheckinStage
+                const scoreKey = `${key}Score` as 'writtenScore' | 'interviewScore' | 'defenseScore'
+                const noteKey = `${key}Note` as 'writtenNote' | 'interviewNote' | 'defenseNote'
+                return (
+                  <div key={item} className="grid gap-1.5">
+                    <Label className="text-xs">{RECRUIT_STAGE_LABELS[item]}成绩</Label>
+                    <Input
+                      className="h-8 text-xs"
+                      value={scores[scoreKey]}
+                      placeholder="如 78"
+                      onChange={(event) => setScores({ ...scores, [scoreKey]: event.target.value })}
+                    />
+                    <Input
+                      className="h-8 text-xs"
+                      value={notes[noteKey]}
+                      placeholder={item === 'interview' ? '面试评语' : '阅卷备注'}
+                      onChange={(event) => setNotes({ ...notes, [noteKey]: event.target.value })}
+                    />
+                  </div>
+                )
+              })}
             </div>
             <div className="mt-3 grid gap-1.5">
               <Label className="text-xs">管理员备注</Label>
@@ -605,8 +675,8 @@ function AppDetailDialog({
                 onChange={(event) => setRemark(event.target.value)}
               />
             </div>
-            <Button size="sm" className="mt-3 gap-1.5" onClick={save}>
-              保存
+            <Button size="sm" className="mt-3 gap-1.5" onClick={() => void save()} disabled={saving}>
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} 保存
             </Button>
           </section>
 
@@ -618,14 +688,14 @@ function AppDetailDialog({
                 value={mailKind || 'none'}
                 onValueChange={(value) => setMailKind(value === 'none' ? '' : (value as RecruitMailKind))}
               >
-                <SelectTrigger className="h-8 w-48 text-xs">
+                <SelectTrigger className="h-8 w-56 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">不发送</SelectItem>
                   {RECRUIT_MAIL_KINDS.map((kind) => (
                     <SelectItem key={kind} value={kind}>
-                      {MAIL_OPTION_LABELS[kind]}
+                      {RECRUIT_MAIL_META[kind].label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -636,13 +706,13 @@ function AppDetailDialog({
                 className="gap-1"
                 disabled={!mailKind}
                 onClick={() => {
-                  if (mailKind) demo.sendMail(app.id, mailKind)
+                  if (mailKind) void admin.sendMail(app.id, mailKind)
                 }}
               >
                 <Send className="h-3.5 w-3.5" /> 发送
               </Button>
               <span className="text-[11px] text-muted-foreground">
-                {mailKind ? DEMO_MAIL_META[mailKind].trigger : '选一封信补发给他'}
+                {mailKind ? RECRUIT_MAIL_META[mailKind].trigger : '选一封信补发给他'}
               </span>
             </div>
           </section>
@@ -656,11 +726,15 @@ function AppDetailDialog({
               <ul className="space-y-1.5 text-xs">
                 {mails.map((mail) => (
                   <li key={mail.id} className="flex flex-wrap items-center gap-2">
-                    <span className="text-muted-foreground">{demo.formatTime(mail.at)}</span>
-                    <span className="font-medium">{mail.label}</span>
+                    <span className="text-muted-foreground">{formatTime(mail.createdAt)}</span>
+                    <span className="font-medium">
+                      {(RECRUIT_MAIL_KINDS as readonly string[]).includes(mail.kind)
+                        ? RECRUIT_MAIL_META[mail.kind as RecruitMailKind].label
+                        : '自定义通知'}
+                    </span>
                     <span className="min-w-0 flex-1 truncate text-muted-foreground">{mail.subject}</span>
                     <span className={mail.ok ? 'text-emerald-700' : 'text-destructive'}>
-                      {mail.ok ? '已发出' : `失败 ${mail.error}`}
+                      {mail.ok ? '已发出' : `${mail.code} ${mail.message}`}
                     </span>
                   </li>
                 ))}
@@ -677,15 +751,4 @@ function AppDetailDialog({
       </DialogContent>
     </Dialog>
   )
-}
-
-/** 补发下拉里的信件名（与邮件日志里的叫法保持一致） */
-const MAIL_OPTION_LABELS: Record<RecruitMailKind, string> = {
-  written_invite: '笔试邀请函',
-  interview_invite: '面试邀请函',
-  interview_passed: '面试通过通知',
-  offer: '正式成员邀请函',
-  thanks_written: '感谢你参加笔试',
-  thanks_interview: '感谢你参加面试',
-  thanks_defense: '感谢你在预备期的付出',
 }
