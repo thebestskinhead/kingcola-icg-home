@@ -177,6 +177,13 @@ export function JoinSection({ site }: { site: SiteConfig }) {
     setFile(f)
   }
 
+  /**
+   * 同一学号重复提交 = **替换材料**（换报名表、删旧文件）。
+   * 覆盖不可逆，所以第一次会被服务端拦下来要求确认 ——
+   * 这里把确认状态翻成「已确认」，按钮随之变成「确认替换」，再点一次才真的交。
+   */
+  const [replaceConfirmed, setReplaceConfirmed] = useState(false)
+
   const submit = async () => {
     if (!file) return toast.error('请先选择报名表文件')
     const invalid = validateApplicationForm({ email, phone, qq })
@@ -187,21 +194,24 @@ export function JoinSection({ site }: { site: SiteConfig }) {
     form.append('email', email.trim())
     form.append('phone', phone.trim())
     form.append('qq', qq.trim())
+    if (replaceConfirmed) form.append('replace', 'true')
 
     setSubmitting(true)
     try {
-      const created = await submitApplication(form)
+      const created = await submitApplication(form, replaceConfirmed)
       setApplication(created)
       setInviteUrl('')
       setFile(null)
-      toast.success('报名表已提交，我们会尽快安排笔试', {
-        description: '笔试与面试安排会同时发到你的邮箱，请留意查收',
+      setReplaceConfirmed(false)
+      toast.success(replaceConfirmed ? '报名表已替换' : '报名表已提交，我们会尽快安排笔试', {
+        description: replaceConfirmed ? '原来的材料已被新的一份取代' : '笔试与面试安排会同时发到你的邮箱，请留意查收',
       })
       // 顺带把最新的安排取回来（后台可能刚更新了笔试时间）
       await loadApplication()
     } catch (error) {
-      if (error instanceof ApiError && error.code === 'ALREADY_APPLIED') {
-        await loadApplication()
+      if (error instanceof ApiError && error.code === 'REPLACE_CONFIRM') {
+        // 第一次撞上「已报过名」：不直接拒绝，而是让同学明确选择是否替换
+        setReplaceConfirmed(true)
         toast.info(error.message)
       } else {
         toast.error(error instanceof ApiError ? error.message : '提交失败，请稍后重试')
@@ -449,11 +459,18 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 </div>
               </div>
 
+              {replaceConfirmed && (
+                <div className="mt-6 rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-xs leading-relaxed text-amber-700">
+                  你之前已经提交过报名表。再点一次「确认替换」会<strong>覆盖原来的材料并删除旧文件</strong>；
+                  不想替换的话换掉文件前先别点。
+                </div>
+              )}
+
               <Button onClick={() => void submit()} className="mt-6 w-full" disabled={!file || submitting}>
-                {submitting ? '正在上传…' : '上传并提交'}
+                {submitting ? '正在上传…' : replaceConfirmed ? '确认替换报名表' : '上传并提交'}
               </Button>
               <p className="mt-3 text-xs text-muted-foreground">
-                提交后可在本页随时查看进度；一位同学只保留一条报名记录。
+                提交后可在本页随时查看进度；一位同学只保留一条报名记录，重复提交会替换材料。
               </p>
             </>
           )}

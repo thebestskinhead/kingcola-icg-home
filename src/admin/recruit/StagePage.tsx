@@ -3,6 +3,7 @@ import { RecruitOpsGuard, RecruitTabs } from './RecruitTabs'
 import { useRecruitSettings } from './useRecruitSettings'
 import { StageRoster, StageShell } from './StageKit'
 import { AutoTaskCard } from './AutoTaskCard'
+import { ManualEntryCard } from './ManualEntryCard'
 import { SessionPanel } from './SessionPanel'
 import { ScorePanel } from './ScorePanel'
 import { RECRUIT_STAGE_HINTS, RECRUIT_STAGE_LABELS, type RecruitStage } from '@shared/recruit'
@@ -29,6 +30,7 @@ export function StagePage({ stage }: { stage: RecruitStage }) {
 
   if (stage === 'apply') {
     operations.push(
+      <ManualEntryCard key="manual" onCreated={bump} />,
       <AutoTaskCard
         key="confirm_written"
         task="confirm_written"

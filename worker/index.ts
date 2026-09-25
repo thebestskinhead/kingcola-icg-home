@@ -20,6 +20,7 @@ import {
 } from './routes/admin-auth'
 import {
   bulkApplicationsAdmin,
+  createApplicationAdmin,
   deleteApplicationAdmin,
   downloadApplicationFile,
   getApplicationAdmin,
@@ -169,9 +170,11 @@ const routes: RouteDef[] = [
   { method: 'PUT', path: '/api/admin/recruit/sessions/:id', handler: updateSessionAdmin, auth: 'admin' },
   { method: 'DELETE', path: '/api/admin/recruit/sessions/:id', handler: deleteSessionAdmin, auth: 'admin' },
 
-  // ---- 后台：报名明细（列表 / 详情 / 改状态 / 批量 / 批量通知信 / 下载） ----
+  // ---- 后台：报名明细（列表 / 补录 / 详情 / 改状态 / 批量 / 批量通知信 / 下载） ----
   { method: 'GET', path: '/api/admin/applications', handler: listApplicationsAdmin, auth: 'admin' },
-  // 批量与群发走 POST，与下面的记录级路由（GET/PUT/DELETE）方法不同，不会互相截胡
+  // 补录未报名考生（开放参加制下现场来考的人）；批量与群发走 POST，
+  // 与下面的记录级路由（GET/PUT/DELETE）方法不同，不会互相截胡
+  { method: 'POST', path: '/api/admin/applications', handler: createApplicationAdmin, auth: 'admin' },
   { method: 'POST', path: '/api/admin/applications/bulk', handler: bulkApplicationsAdmin, auth: 'admin' },
   { method: 'POST', path: '/api/admin/applications/notify', handler: notifyApplicationsAdmin, auth: 'admin' },
   { method: 'GET', path: '/api/admin/applications/:id', handler: getApplicationAdmin, auth: 'admin' },

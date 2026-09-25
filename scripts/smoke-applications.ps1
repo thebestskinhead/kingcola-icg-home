@@ -135,7 +135,33 @@ try {
         Check "$($s.name) 报名表被重命名为「姓名+学号+报名表」" ($created.data.fileName -eq "$($s.name)+$($s.id)+报名表.pdf") $created.data.fileName
         $appIds[$s.key] = $created.data.id
     }
-    Check '重复提交被拒 409' ((& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications" -H "Cookie: $($students[0].token)" -F "file=@$pdfPath;type=application/pdf" -F 'email=x@b.com' -F 'phone=13800000000' -F 'qq=123456') -eq '409')
+    # 同一学号再交一份 = 替换材料，但要**先确认**（覆盖不可逆）
+    $beforeReplace = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    $askAgain = & curl.exe -s -X POST "$Base/api/applications" -H "Cookie: $($students[0].token)" -F "file=@$pdfPath;type=application/pdf" -F 'email=x@b.com' -F 'phone=13800000000' -F 'qq=123456' | ConvertFrom-Json
+    Check '重复提交先要求确认（REPLACE_CONFIRM）' ($askAgain.ok -eq $false -and $askAgain.error.code -eq 'REPLACE_CONFIRM') ($askAgain | ConvertTo-Json -Compress)
+
+    $rawReplace = & curl.exe -s -X POST "$Base/api/applications?replace=true" -H "Cookie: $($students[0].token)" -F "file=@$pdfPath;type=application/pdf" -F 'email=x@b.com' -F 'phone=13800000000' -F 'qq=123456'
+    $replaced = $rawReplace | ConvertFrom-Json
+    Check '确认后替换成功（仍是同一条记录）' ($replaced.ok -eq $true -and $replaced.data.id -eq $appIds['a']) $rawReplace
+
+    $afterReplace = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    Check '替换后 fileUrl 已换成新文件' ($afterReplace.fileUrl -ne '' -and $afterReplace.fileUrl -ne $beforeReplace.fileUrl) "$($beforeReplace.fileUrl) → $($afterReplace.fileUrl)"
+    $oldKey = $beforeReplace.fileUrl -replace '^/api/files/', ''
+    Check '旧报名表文件已被删除（管理员访问也 404）' ((RawStatus 'GET' "/api/files/$oldKey" $jar) -eq '404') $oldKey
+    Check '替换后文件名仍是「姓名+学号+报名表」' ($afterReplace.fileName -eq "$($students[0].name)+$($students[0].id)+报名表.pdf") $afterReplace.fileName
+
+    # ===== 3.2 手动补录考生 =====
+    Write-Host "`n3.2) 手动补录考生"
+    $dupEntry = Api 'POST' '/api/admin/applications' @{ name = '冒烟甲'; studentId = $students[0].id } $jar
+    Check '学号已存在被拒（ALREADY_EXISTS）' ($dupEntry.ok -eq $false -and $dupEntry.error.code -eq 'ALREADY_EXISTS') ($dupEntry | ConvertTo-Json -Compress)
+    $badEntry = Api 'POST' '/api/admin/applications' @{ name = '格式错'; studentId = "SME$stamp"; email = 'not-an-email' } $jar
+    Check '补录时邮箱格式错被拒' ($badEntry.ok -eq $false -and $badEntry.error.code -eq 'VALIDATION_FAILED')
+    $manual = Api 'POST' '/api/admin/applications' @{ name = '现场来考'; studentId = "SMD$stamp"; email = 'manual@example.edu.cn' } $jar
+    Check '补录成功且 source=manual、无报名表' (
+        $manual.ok -eq $true -and $manual.data.application.source -eq 'manual' -and $manual.data.application.fileUrl -eq ''
+    ) ($manual | ConvertTo-Json -Compress)
+    # 删掉补录的人，别影响后面「3 人」的统计断言
+    $null = Api 'DELETE' "/api/admin/applications/$($manual.data.application.id)" $null $jar
 
     # ===== 3. 报名表私有性 =====
     Write-Host "`n3) 报名表私有性"
@@ -155,6 +181,10 @@ try {
     Check '执行后全部进入笔试阶段' ($run.ok -eq $true -and $run.data.moved -eq 3)
     $aNow = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
     Check '甲已进入笔试阶段' ($aNow.stage -eq 'written' -and $aNow.result -eq '') "$($aNow.stage)/$($aNow.result)"
+
+    # 名单确认后材料锁死：就算还带着 replace=true 也要被拒
+    $locked = & curl.exe -s -X POST "$Base/api/applications?replace=true" -H "Cookie: $($students[0].token)" -F "file=@$pdfPath;type=application/pdf" -F 'email=x@b.com' -F 'phone=13800000000' -F 'qq=123456' | ConvertFrom-Json
+    Check '确认名单后材料锁死（MATERIAL_LOCKED）' ($locked.ok -eq $false -and $locked.error.code -eq 'MATERIAL_LOCKED') ($locked | ConvertTo-Json -Compress)
 
     # ===== 4. 扫码签到（凭证 = 场次二维码） =====
     Write-Host "`n4) 扫码签到"

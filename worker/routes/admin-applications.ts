@@ -18,6 +18,9 @@
 
 import {
   applicationLabel,
+  APPLICATION_EMAIL_PATTERN,
+  APPLICATION_PHONE_PATTERN,
+  APPLICATION_QQ_PATTERN,
   canMoveStage,
   isRecruitResult,
   isRecruitStage,
@@ -30,8 +33,10 @@ import {
   type RecruitStage,
 } from '../../shared/recruit'
 import {
+  createApplication,
   deleteApplication,
   getApplication,
+  getApplicationByStudentId,
   listApplications,
   listMailLogs,
   updateApplication,
@@ -274,6 +279,85 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
   })
 
   return ok({ application: toAdminView(updated, ctx.url.origin), mail })
+}
+
+// ===== 手动补录考生 =====
+
+interface CreateApplicationBody {
+  name?: string
+  studentId?: string
+  email?: string
+  phone?: string
+  qq?: string
+}
+
+/**
+ * 手动补录考生：**没有在官网报名、但现场来考的人**。
+ *
+ * 开放参加制下这种人是常态（看到海报就来了），签到页也允许他们直接填姓名学号，
+ * 但那样他们的信息不会进名单、后面发通知也找不到人 —— 所以给管理员一个补录入口。
+ *
+ * 与官网报名的差别（刻意的）：
+ *   - **不要求报名表文件**：人已经站在考场里了，材料可以后补或不要；
+ *   - 联系方式全部可选（签到页只要求姓名 + 学号，邮箱可能是后问到的）；
+ *   - `source = 'manual'`，名单里会带「补录」标记，一眼能和官网报名区分开。
+ * 补录完他们就处在报名阶段，确认笔试名单时和官网报名的人一起推进、一起收邀请函。
+ */
+export async function createApplicationAdmin(ctx: RequestContext): Promise<Response> {
+  const body = await readJsonBody<CreateApplicationBody>(ctx.request)
+  if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
+
+  const name = String(body.name ?? '').trim()
+  const studentId = String(body.studentId ?? '').trim()
+  if (!name) return fail(400, 'VALIDATION_FAILED', '请填写姓名')
+  if (!studentId) return fail(400, 'VALIDATION_FAILED', '请填写学号')
+
+  const email = String(body.email ?? '').trim()
+  const phone = String(body.phone ?? '').trim()
+  const qq = String(body.qq ?? '').trim()
+  // 可选字段只在填了的时候校验格式，避免「不知道邮箱就补不了录」
+  if (email && !APPLICATION_EMAIL_PATTERN.test(email)) {
+    return fail(400, 'VALIDATION_FAILED', '邮箱格式不正确')
+  }
+  if (phone && !APPLICATION_PHONE_PATTERN.test(phone)) {
+    return fail(400, 'VALIDATION_FAILED', '手机号应为 11 位数字')
+  }
+  if (qq && !APPLICATION_QQ_PATTERN.test(qq)) {
+    return fail(400, 'VALIDATION_FAILED', 'QQ 号应为 5–12 位数字')
+  }
+
+  let created
+  try {
+    created = await createApplication(ctx.env, {
+      studentId,
+      name,
+      email,
+      phone,
+      qq,
+      fileUrl: '',
+      fileName: '',
+      fileSize: 0,
+      source: 'manual',
+    })
+  } catch (error) {
+    // student_id 有唯一约束，撞上就是这位同学已经存在（官网报过或已被补录过）
+    if (await getApplicationByStudentId(ctx.env, studentId)) {
+      return fail(409, 'ALREADY_EXISTS', '这个学号已经在名单里了，无需重复补录')
+    }
+    console.error('[applications] 补录失败', { studentId, error })
+    return fail(500, 'CREATE_FAILED', '补录失败，请稍后重试')
+  }
+
+  await writeAudit(ctx.env, {
+    actor: actorOf(ctx),
+    action: 'create',
+    resource: 'applications',
+    targetId: created.id,
+    detail: `补录考生 ${name}（${studentId}）`,
+    ...requestMeta(ctx),
+  })
+
+  return ok({ application: toAdminView(created, ctx.url.origin) }, { status: 201 })
 }
 
 // ===== 批量操作 =====

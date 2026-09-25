@@ -256,8 +256,19 @@ export function submitCheckin(token: string, body: { name: string; studentId: st
  * 提交报名表（multipart）。报名表文件按后台「对象存储」页的
  * applications 目标桶存取；不要手动设置 content-type，交给浏览器带 boundary。
  */
-export function submitApplication(form: FormData) {
-  return apiRequest<Application>('/api/applications', { method: 'POST', body: form }, { timeoutMs: 120_000 })
+/**
+ * 提交报名表（multipart）。
+ *
+ * 同一学号已有记录时，后端会返回 409 `REPLACE_CONFIRM` 要求确认；
+ * `replace = true` 表示同学已确认 —— 会替换材料并删除旧文件。
+ * 确认笔试名单后材料锁死，替换会被拒（MATERIAL_LOCKED）。
+ */
+export function submitApplication(form: FormData, replace = false) {
+  return apiRequest<Application>(
+    `/api/applications${replace ? '?replace=true' : ''}`,
+    { method: 'POST', body: form },
+    { timeoutMs: 120_000 },
+  )
 }
 
 /** 进度页要用到的本届安排（时间都是后台配置里的全局时间窗） */
@@ -550,6 +561,25 @@ export interface ApplicationDetail {
 
 export function adminGetApplication(id: string) {
   return apiRequest<ApplicationDetail>(`/api/admin/applications/${encodeURIComponent(id)}`)
+}
+
+export interface ManualApplicationInput {
+  name: string
+  studentId: string
+  email?: string
+  phone?: string
+  qq?: string
+}
+
+/**
+ * 补录未报名考生（现场来考的人）。
+ * 不要求报名表文件，联系方式全部可选 —— 人已经在考场里了，缺什么后补。
+ */
+export function adminCreateApplication(body: ManualApplicationInput) {
+  return apiRequest<{ application: AdminApplication }>(
+    '/api/admin/applications',
+    jsonInit('POST', body),
+  )
 }
 
 export interface UpdateApplicationBody {

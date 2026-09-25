@@ -34,7 +34,7 @@ import {
   type CheckinStage,
   type RecruitResult,
 } from '../../shared/recruit'
-import { cnTimeToText } from '../../shared/time'
+import { cnTimeToText, isoToCnTime } from '../../shared/time'
 import { MEMBER_ROLES, type Application } from '../../shared/types'
 import {
   createApplication,
@@ -48,7 +48,7 @@ import { getRecruitSettings } from '../lib/recruit-config'
 import { getCheckinToken, getSession, listSessions, SESSION_FIELD } from '../lib/recruit-sessions'
 import { createEntity, getSiteConfig, writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
-import { getStorage, storageReady } from '../lib/storage'
+import { deleteStoredFile, getStorage, storageReady } from '../lib/storage'
 import { buildObjectKey, sniffDocument } from '../lib/uploads'
 
 /** 签到时间写入哪一列 */
@@ -113,10 +113,24 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
   }
   const storage = await getStorage(ctx.env, 'applications')
 
-  // 一位同学一条记录：已报过名就如实告知当前进度，而不是悄悄覆盖
+  // 一位同学一条记录。已报过名不直接拒绝，而是要求**显式确认替换**：
+  // 覆盖材料是不可逆的，不能因为表单多点了一下就把人家交上来的东西悄悄盖掉。
+  // 替换窗口与报名通道同一条规则（isApplyOpen）—— 确认笔试名单后材料就锁死。
+  const replace = ctx.url.searchParams.get('replace') === 'true'
   const existing = await getApplicationByStudentId(ctx.env, me.studentId)
   if (existing) {
-    return fail(409, 'ALREADY_APPLIED', '你已经提交过报名表，可在本页查看当前进度')
+    if (!replace) {
+      const at = isoToCnTime(existing.createdAt) || '之前'
+      return fail(
+        409,
+        'REPLACE_CONFIRM',
+        `你在 ${at} 已提交过报名表${existing.fileName ? `（${existing.fileName}）` : ''}。再提交一次会替换掉原来的材料，请确认后再交`,
+      )
+    }
+    // isApplyOpen 已经把「确认名单后」拦在前面，这里是双保险（万一有人手动把人推进了下一阶段）
+    if (existing.stage !== 'apply') {
+      return fail(409, 'MATERIAL_LOCKED', '笔试名单已确认，报名材料已锁定，无法替换；如确有需要请回复邮件联系我们')
+    }
   }
 
   let form: FormData
@@ -166,39 +180,55 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
   const key = buildObjectKey(APPLICATION_DOC_SCOPE, filename || 'application', kind.ext)
   await storage.put(key, file, { contentType: kind.mime })
 
-  let created
+  /** 新材料共用的字段（新建与替换同一套） */
+  const docFields = {
+    email: input.email.trim(),
+    phone: input.phone.trim(),
+    qq: input.qq.trim(),
+    fileUrl: storage.objectUrl(key),
+    // 统一重命名为「姓名+学号+报名表」，同学原来的「简历(1).pdf」一律不用
+    fileName: applicationDocFileName(me.name, me.studentId, kind.ext),
+    fileSize: file.size,
+  }
+
+  let record
   try {
-    created = await createApplication(ctx.env, {
-      studentId: me.studentId,
-      name: me.name,
-      email: input.email.trim(),
-      phone: input.phone.trim(),
-      qq: input.qq.trim(),
-      fileUrl: storage.objectUrl(key),
-      // 统一重命名为「姓名+学号+报名表」，同学原来的「简历(1).pdf」一律不用
-      fileName: applicationDocFileName(me.name, me.studentId, kind.ext),
-      fileSize: file.size,
-    })
-  } catch (error) {
-    // 落库失败就把刚上传的文件删掉，不留孤儿
-    await storage.delete(key).catch(() => {})
-    if (await getApplicationByStudentId(ctx.env, me.studentId)) {
-      return fail(409, 'ALREADY_APPLIED', '你已经提交过报名表，可在本页查看当前进度')
+    if (existing && replace) {
+      const updated = await updateApplication(ctx.env, existing.id, docFields)
+      if (!updated) throw new Error('替换后读取失败')
+      record = updated
+    } else {
+      record = await createApplication(ctx.env, {
+        studentId: me.studentId,
+        name: me.name,
+        ...docFields,
+      })
     }
-    console.error('[applications] 报名落库失败', { studentId: me.studentId, error })
+  } catch (error) {
+    // 落库失败只删**新**文件：替换场景下旧材料还在，不会因为一次失败就两头空
+    await storage.delete(key).catch(() => {})
+    if (!existing && (await getApplicationByStudentId(ctx.env, me.studentId))) {
+      return fail(409, 'REPLACE_CONFIRM', '你已经提交过报名表，再提交一次会替换掉原来的材料')
+    }
+    console.error('[applications] 报名落库失败', { studentId: me.studentId, replace, error })
     return fail(500, 'CREATE_FAILED', '报名表保存失败，请稍后重试')
+  }
+
+  // **替换成功之后**才删旧文件 —— 顺序反了的话，一次失败就会把旧材料弄丢
+  if (existing && replace && existing.fileUrl) {
+    await deleteStoredFile(ctx.env, existing.fileUrl)
   }
 
   await writeAudit(ctx.env, {
     actor: `student:${me.studentId}`,
-    action: 'apply',
+    action: existing && replace ? 'replace_application' : 'apply',
     resource: 'applications',
-    targetId: created.id,
-    detail: `${created.name} ${kind.ext} ${(file.size / 1024).toFixed(1)}KB`,
+    targetId: record.id,
+    detail: `${record.name} ${kind.ext} ${(file.size / 1024).toFixed(1)}KB${existing && replace ? '（替换旧材料）' : ''}`,
     ...requestMeta(ctx),
   })
 
-  return ok(toStudentView(created), { status: 201 })
+  return ok(toStudentView(record), { status: existing && replace ? 200 : 201 })
 }
 
 // ===== 我的报名进度 =====
