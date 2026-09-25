@@ -329,9 +329,14 @@ export function adminGetRecruit() {
 }
 
 /**
- * 保存名称 / 群号 / 模板。
- * 注意**不接受 state** —— 整届状态只能通过 `adminRunRecruitAction` 推进，
- * 否则设置页保存一下就可能把流程跳到别的阶段。
+ * 保存本届名称 / 四个群号 / 邮件模板。
+ *
+ * 界面上分属两处、边界清晰（判据：下一届还要不要重新填一次）：
+ * - **跨届通用** → 「设置」页（`RecruitSettingsView`）：七封邮件模板、官网招新文案；
+ * - **只属于本届** → 「流程」页的本届信息面板（`CycleInfoPanel`）：名称、四个 QQ 群号。
+ *
+ * 注意**不接受 `state`** —— 整届状态只能通过 `adminRunRecruitAction` 推进，
+ * 否则「保存一下」就可能把流程跳到别的阶段。
  */
 export function adminSaveRecruit(patch: {
   cycle?: Partial<RecruitCycleConfig>

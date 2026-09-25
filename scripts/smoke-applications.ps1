@@ -205,6 +205,11 @@ try {
     $walkin = (Status 'POST' '/api/admin/applications' $jar '' @{ name = '现场补录戊'; studentId = "SME$stamp"; email = 'e@example.edu.cn'; phone = '13800000010'; qq = '123458'; stage = 'written'; file = "@$pdfPath;type=application/pdf" })
     Check '笔试现场补录（带报名表，201）' ($walkin -eq '201') $walkin
 
+    # 本届信息（名称 / 群号）属于流程，不属于设置页：**任何阶段都能改**，改完立即生效
+    $renamed = (Api 'PUT' '/api/admin/recruit' @{ cycle = @{ groups = @{ written = '710000009'; interview = '710000002'; probation = '710000003'; formal = '710000004' } } } $jar).data
+    Check '笔试进行中也能改本届群号（改完立即生效）' ($renamed.cycle.groups.written -eq '710000009') $renamed.cycle.groups.written
+    $null = Api 'PUT' '/api/admin/recruit' @{ cycle = @{ groups = @{ written = '710000001' } } } $jar
+
     # ===== 7. 结束笔试 → 缺考与补签 =====
     Write-Host "`n7) 结束笔试（缺考与补签）"
     $endWritten = (Api 'POST' '/api/admin/recruit/actions' @{ action = 'end_written' } $jar).data

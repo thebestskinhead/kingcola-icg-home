@@ -1,9 +1,15 @@
 /**
- * 设置：七封邮件的模板 + 本届名称与四个 QQ 群号 + 官网招新文案。
+ * 设置 —— **只放跨届通用的东西**：
  *
- * 模板里**没有任何时间与地点变量** —— 安排一律让同学看对应的 QQ 群，
- * 所以可用变量清单里只有四个群号（外加姓名、学号、邀请链接、工作室信息）。
+ *   ① 七封邮件的模板（写给所有届用的通用文案，靠 `{变量}` 逐人/逐届渲染）；
+ *   ② 官网「招新与加入我们」的文案（首页横幅 + 加入我们页面）。
  *
+ * **属于「本届」的东西一律不放这里** —— 本届名称、四个 QQ 群号、阶段推进、
+ * 名单与签到二维码都在「流程」页（见 `RecruitPage` 的「本届信息」）。
+ * 判据很简单：**下一届还要不要重新填一次？** 要，就是流程里的东西。
+ *
+ * 模板里没有任何时间与地点变量 —— 安排一律让同学看对应的 QQ 群；
+ * 四个群号是「本届」的值，这里只**读取**它们用于预览（改在流程页）。
  * 未知变量由后端算好（`admin.unknownVariables`），前端不另判一套。
  */
 
@@ -18,15 +24,11 @@ import { cn } from '@/lib/utils'
 import { AlertTriangle, Loader2, Save } from 'lucide-react'
 import { toast } from 'sonner'
 import {
-  RECRUIT_GROUP_LABELS,
   RECRUIT_MAIL_KINDS,
   RECRUIT_MAIL_META,
   RECRUIT_MAIL_VARIABLES,
   renderTemplate,
-  validateQQGroups,
-  type RecruitGroupKey,
   type RecruitMailKind,
-  type RecruitQQGroups,
   type RecruitTemplates,
 } from '@shared/recruit'
 import type { SiteConfig } from '@shared/types'
@@ -42,18 +44,12 @@ type JoinCopy = Pick<
 export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
   const [templates, setTemplates] = useState<RecruitTemplates>(admin.templates)
   const [active, setActive] = useState<RecruitMailKind>('written_invite')
-  const [cycleName, setCycleName] = useState(admin.cycle.name)
-  const [groups, setGroups] = useState<RecruitQQGroups>(admin.cycle.groups)
   const [site, setSite] = useState<SiteConfig | null>(null)
   const [join, setJoin] = useState<JoinCopy | null>(null)
   const [saving, setSaving] = useState(false)
 
-  // 别处（流程页）改过设置后跟着刷新
+  // 别处（流程页）改过模板后跟着刷新
   useEffect(() => setTemplates(admin.templates), [admin.templates])
-  useEffect(() => {
-    setCycleName(admin.cycle.name)
-    setGroups(admin.cycle.groups)
-  }, [admin.cycle])
 
   useEffect(() => {
     adminGetConfig()
@@ -77,15 +73,14 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
 
   /**
    * 预览数据：只有「逐人不同」的姓名、学号与邀请链接用示例值；
-   * 本届名称与四个群号一律照当前填的来 —— 没填就**保持 `{writtenGroup}` 原样**
-   * （`renderTemplate` 对未配置的招新变量不做替换），这样一眼能看出还差哪些没配。
-   * 休眠期进设置页也是同一套逻辑。
+   * 本届名称与四个群号**读本届的实际值**（在流程页改） —— 没填就保持 `{writtenGroup}` 原样
+   * （`renderTemplate` 对未配置的招新变量不做替换），一眼能看出还差哪些没配。
    */
   const previewVars: Record<string, string> = {
     name: '张同学',
     studentId: '2026001',
-    cycleName,
-    ...groups,
+    cycleName: admin.cycle.name,
+    ...admin.cycle.groups,
     inviteLink: `${window.location.origin}/invite/abc123`,
     studio: site?.studioName ?? '',
     contactEmail: site?.contactEmail ?? '',
@@ -96,12 +91,8 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
     setTemplates((prev) => ({ ...prev, [active]: { ...prev[active], ...changes } }))
 
   const saveAll = async () => {
-    const invalid = validateQQGroups(groups)
-    if (invalid) return toast.error(invalid)
-
     setSaving(true)
     try {
-      await admin.saveCycleInfo({ name: cycleName.trim(), groups })
       await admin.saveTemplates(templates)
       if (join) {
         await adminUpdateConfig({ site: join })
@@ -118,7 +109,8 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
         <div>
           <h1 className="font-display text-2xl font-bold">设置</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            邮件模板、四个 QQ 群号与官网招新文案。邮件里不写时间与地点 —— 安排一律通过对应的 QQ 群通知。
+            这里只有跨届通用的东西：七封邮件模板与官网招新文案。
+            本届的名称、四个 QQ 群号、阶段推进与签到二维码都属于流程，在「流程」页里改。
           </p>
         </div>
         <Button className="gap-1.5" onClick={() => void saveAll()} disabled={saving}>
@@ -130,7 +122,7 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
       <Tabs defaultValue="mail">
         <TabsList>
           <TabsTrigger value="mail">邮件模板</TabsTrigger>
-          <TabsTrigger value="join">招新与加入我们</TabsTrigger>
+          <TabsTrigger value="join">官网招新文案</TabsTrigger>
         </TabsList>
 
         <TabsContent value="mail" className="mt-4">
@@ -244,6 +236,9 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
                   <pre className="mt-3 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
                     {renderTemplate(template.body, previewVars)}
                   </pre>
+                  <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+                    预览里的本届名称与四个群号取自「流程 → 本届信息」；还没填的会保持 {'{writtenGroup}'} 原文。
+                  </p>
                 </div>
               </div>
             </div>
@@ -251,36 +246,10 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
         </TabsContent>
 
         <TabsContent value="join" className="mt-4 space-y-4">
-          <div className="grid gap-5 rounded-xl border border-border bg-card p-5">
-            <div className="grid gap-1.5">
-              <Label className="text-xs">本届名称</Label>
-              <Input value={cycleName} onChange={(event) => setCycleName(event.target.value)} />
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              {(Object.keys(RECRUIT_GROUP_LABELS) as RecruitGroupKey[]).map((key) => (
-                <div key={key} className="grid gap-1.5">
-                  <Label className="text-xs">{RECRUIT_GROUP_LABELS[key]}</Label>
-                  <Input
-                    inputMode="numeric"
-                    value={groups[key]}
-                    placeholder="如 123456789"
-                    onChange={(event) => setGroups({ ...groups, [key]: event.target.value })}
-                  />
-                  <p className="text-[11px] text-muted-foreground">
-                    {key === 'written' && '笔试邀请函里给的就是它'}
-                    {key === 'interview' && '面试邀请函里给的就是它'}
-                    {key === 'probation' && '面试通过通知里给的就是它'}
-                    {key === 'formal' && '正式邀请函里给的就是它'}
-                  </p>
-                </div>
-              ))}
-            </div>
-            <p className="text-[11px] leading-relaxed text-muted-foreground">
-              所有时间与地点安排都在对应的群里通知，邮件里不再出现。群号改了会立刻体现在之后发出的邀请函里；
-              还没建群可以先留空 —— 留空的变量在邮件与预览里会保持 {'{writtenGroup}'} 这样的原文，
-              不会替换成空白，一眼就能看出还没配。休眠期也能在这里改。
-            </p>
+          <div className="rounded-xl border border-dashed border-border bg-secondary/30 px-5 py-4 text-[11px] leading-relaxed text-muted-foreground">
+            本届名称与四个 QQ 群号属于「本届」（下一届要重新填），所以它们在
+            <strong className="mx-1 text-foreground">流程 → 本届信息</strong>
+            里改，不放在这里。这里只管跨届通用的邮件模板与官网文案。
           </div>
 
           {join && (

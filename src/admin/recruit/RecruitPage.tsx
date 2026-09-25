@@ -167,14 +167,6 @@ export function RecruitPage() {
       )
     }
 
-    // 还没配的东西直接列出来：这些变量在邮件与预览里会保持原文，不会悄悄变空白
-    const missing = [
-      ...(admin.cycle.name.trim() ? [] : ['本届名称']),
-      ...(Object.keys(RECRUIT_GROUP_LABELS) as RecruitGroupKey[])
-        .filter((key) => !admin.cycle.groups[key].trim())
-        .map((key) => RECRUIT_GROUP_LABELS[key]),
-    ]
-
     return (
       <div className="mx-auto max-w-3xl">
         <div className="rounded-2xl border border-border bg-card px-8 py-20 text-center">
@@ -189,15 +181,13 @@ export function RecruitPage() {
               <ArrowRight className="h-4 w-4" /> {RECRUIT_ACTION_META.start_cycle.label}
             </Button>
             <Button size="lg" variant="outline" className="gap-2" onClick={() => setTopView('settings')}>
-              <Settings2 className="h-4 w-4" /> 设置本届名称与群号
+              <Settings2 className="h-4 w-4" /> 邮件模板与官网文案
             </Button>
           </div>
-          {missing.length > 0 && (
-            <p className="mx-auto mt-6 max-w-md text-xs leading-relaxed text-muted-foreground">
-              还没配：{missing.join('、')}。可以先点「设置」填好 —— 休眠期也能改；
-              没配置的变量会保持 {'{writtenGroup}'} 这样的原文，不会悄悄变成空白。
-            </p>
-          )}
+          <p className="mx-auto mt-6 max-w-md text-xs leading-relaxed text-muted-foreground">
+            「设置」里是跨届通用的东西（七封邮件模板、官网招新文案），休眠期就能先备好；
+            本届的名称与四个 QQ 群号属于流程，点「启动系统」后在流程页里填。
+          </p>
         </div>
       </div>
     )
@@ -502,6 +492,24 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
   }
 
   const stageBody = () => {
+    // 「备招」节点 = **本届信息**（名称 + 四个 QQ 群号）：任何状态下都能点回来改。
+    // 群号写错了必须能当场改，所以这里刻意不显示「已走过」的锁定页。
+    if (shown === 'prepare') {
+      return (
+        <div className="space-y-4">
+          <CycleInfoPanel admin={admin} />
+          {admin.state === 'prepare' ? (
+            actionCard('open_apply')
+          ) : (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              本届正在进行中（{admin.stateLabel}）：名称与群号随时可改，改完立即体现在之后发出的邀请函里。
+              阶段推进请回「{labelOf(current)}」。
+            </p>
+          )}
+        </div>
+      )
+    }
+
     if (shown !== current) {
       const isPast = TIMELINE.findIndex((node) => node.key === shown) < TIMELINE.findIndex((node) => node.key === current)
       return (
@@ -521,14 +529,7 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
     }
 
     switch (admin.state) {
-      case 'prepare':
-        return (
-          <div className="space-y-4">
-            <PreparePanel admin={admin} />
-            {actionCard('open_apply')}
-          </div>
-        )
-
+      // 没有 'prepare' 分支：备招节点已经被上面接管（任何状态都能查看 / 修改本届信息）
       case 'apply':
         return (
           <div className="space-y-4">
@@ -756,15 +757,24 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
           共 <strong className="text-foreground">{admin.stats?.total ?? 0}</strong> 人报名 · 已转正{' '}
           <strong className="text-foreground">{admin.stats?.members ?? 0}</strong>
         </span>
-        <Button variant="ghost" size="sm" className="ml-auto gap-1 text-xs" onClick={admin.reload}>
+        <Button variant="ghost" size="sm" className="ml-auto gap-1 text-xs" onClick={() => setView('prepare')}>
+          <Settings2 className="h-3.5 w-3.5" /> 本届信息
+        </Button>
+        <Button variant="ghost" size="sm" className="gap-1 text-xs" onClick={admin.reload}>
           <RotateCcw className="h-3.5 w-3.5" /> 刷新
         </Button>
       </div>
 
       {/* ===== 阶段标题 ===== */}
       <div className="mb-5">
-        <h1 className="font-display text-2xl font-bold">{labelOf(shown)}阶段</h1>
-        <p className="mt-1 text-sm text-muted-foreground">{TIMELINE.find((node) => node.key === shown)?.hint}</p>
+        <h1 className="font-display text-2xl font-bold">
+          {shown === 'prepare' ? '本届信息' : `${labelOf(shown)}阶段`}
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {shown === 'prepare'
+            ? '本届名称与四个 QQ 群号 —— 只属于这一届，下一届启动时重新填'
+            : TIMELINE.find((node) => node.key === shown)?.hint}
+        </p>
       </div>
 
       {stageBody()}
@@ -796,8 +806,14 @@ function labelOf(key: string): string {
   return TIMELINE.find((node) => node.key === key)?.label ?? key
 }
 
-/** 备招面板：名称 + 四个群号（保存后才落库，避免逐字打接口） */
-function PreparePanel({ admin }: { admin: RecruitAdmin }) {
+/**
+ * 本届信息：名称 + 四个 QQ 群号。
+ *
+ * 它属于**本届**（下一届要重新填），所以放在流程里而不是「设置」；
+ * 任何状态下都能点时间线的「备招」节点回来改 —— 群号写错了得能当场改。
+ * 保存后才落库（避免逐字打接口），且只在点了保存时才写。
+ */
+function CycleInfoPanel({ admin }: { admin: RecruitAdmin }) {
   const [name, setName] = useState(admin.cycle.name)
   const [groups, setGroups] = useState(admin.cycle.groups)
   const [saving, setSaving] = useState(false)
@@ -811,9 +827,9 @@ function PreparePanel({ admin }: { admin: RecruitAdmin }) {
     <section className="rounded-xl border border-border bg-card">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
         <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700">进行中</span>
-        <h3 className="text-sm font-semibold">备招 · 名称与四个 QQ 群</h3>
+        <h3 className="text-sm font-semibold">本届信息 · 名称与四个 QQ 群</h3>
         <span className="text-[11px] text-muted-foreground">
-          没有任何时间字段 —— 报名何时开始，由下面的按钮决定
+          只属于这一届；每封邀请函只引导进自己对应的那一个群
         </span>
       </div>
       <div className="space-y-4 px-5 py-4">
