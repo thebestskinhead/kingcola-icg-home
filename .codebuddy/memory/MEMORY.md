@@ -38,27 +38,23 @@
 - 已本地端到端冒烟全绿（配置读写/上传/读取/一次性令牌 #1=200 #2=403/applications 匿名 404）。冒烟技巧：kc_admin Cookie 恒带 `Secure`，本地 HTTP 下必须从 cookie jar 手动取 token 回传 `cookie:` 头；PS 内联 JSON 用 `--data-binary $body` 变量（`{\"..\"}` 转义会发非法体）。
 - 业务口约定：站点图 URL 可存 `/api/files/<key>` 或 publicBase 直链；`resolveFileRef()` 两种前缀都能反解。applications/ 前缀仍是私有文件。
 
-## 招新系统 · 后台页现状（2026-09-25 定案，重要）
-- **`/admin/recruit` 现在渲染 `src/admin/recruit/DemoEventDrivenPage.tsx`（全假数据，接口未接）**，
-  信息架构：休眠大屏 → 启动 →「备招 → 报名 → 笔试 → 面试 → 答辩 → 转正 → 归档」，
-  **整届没有任何时间字段**，阶段开与关全靠按钮；报名结束拆成「结束报名」与「确认名单」两个动作；
-  签到二维码只绑阶段（自选有效期 / 生成新码自动作废旧码 / 可作废）；没有场次概念。
-  顶层四个视图：流程 / 名单 / 邮件日志 / 设置（共用 `useDemoRecruit` 一份状态，
-  假数据与纯函数在 `demo-model.ts`）。用户明确：**界面这轮先假数据，接口接线下一轮**。
-- **旧版按阶段拆开的页面已整体归档**到 `backup/recruit-legacy/src/admin/recruit/`（保持原路径可整目录还原），
-  已从 `src` 移除、旧路由全部摘掉。它们**不被 tsc/eslint 编译**（`tsconfig.app.json` 只 include `src`），
-  接线时照备份逐块搬功能，搬完再删备份。
-- **待用户确认 demo 后再动的后端改造**（已定方向，别提前做）：
-  ① 场次概念整体删除（`recruit_sessions` 表、`applications` 的 3 个 `*_session_id` 列、`admin-sessions` 路由、
-  `shared/recruit.ts` 里的 `RecruitSession` 一族与 `sessionPanel`）；签到凭证只绑阶段；
-  ② 周期里的时间字段全删（报名起止、笔试/面试时间地点、`writtenConfirmedAt`、`onboardDeadline`、
-  `recruitPhase()`/`isApplyOpen()` 的时间判定、Cron 的缺考与到点关闭），改为**管理员动作驱动的状态**；
-  ③ 邮件模板不再有任何时间地点：变量删掉 `{writtenAt}/{writtenPlace}/{writtenSessions}/{interview*}`，
-  改为 `{writtenGroup}/{interviewGroup}/{probationGroup}/{formalGroup}`（四个 QQ 群号，见 demo 备招面板），
-  正文写「安排见对应的 QQ 群」。用户口径：**所有邀请信均不含时间信息，一律通过对应 QQ 群通知**；
-  ④ 笔试进行时只有三件事：生成带时效的签到二维码 / 补签 / 补录；面试进行时同笔试但**少补录**。
-
-## 招新系统（applications · 2026-09-25 重构为整届流水线，后端部分已实现）
+## 招新系统 · 最终形态（2026-09-25 全面接线完成，重要）
+- **`/admin/recruit` = `src/admin/recruit/RecruitPage.tsx`，已接真接口**（四个视图：流程 / 名单 / 邮件日志 / 设置，
+  共用 `useRecruitAdmin()`；界面常量在 `recruit-ui.ts`）。曾经的 Demo* 假数据页已全部删除。
+- **整届没有任何时间字段、也没有场次**：`RecruitCycleConfig` 只有 `name / state / groups(四个 QQ 群号) / startedAt`。
+  状态机 11 态（dormant→prepare→apply→apply_review→written→written_review→…→onboard→dormant），
+  **全部动作在 `RECRUIT_ACTION_META` 一张表里**（from/to/needsSelection/文案），
+  后端 `worker/lib/recruit-cycle.ts: runRecruitAction()` 执行，接口 `POST /api/admin/recruit/actions`；
+  后台按钮文案与可点性读同一张表。`PUT /api/admin/recruit` 刻意不接受 `state`。
+- 签到二维码在 `worker/lib/recruit-checkin.ts`：**只绑阶段**（笔试/面试/答辩各一张），签发新码自动作废旧码；
+  接口 `GET|POST /api/admin/recruit/checkin-codes`、`POST .../revoke`。表 `recruit_checkin_tokens`（0009 重建）。
+- 邮件：七条模板，变量只有 `{name}{studentId}{cycleName}{writtenGroup}{interviewGroup}{probationGroup}{formalGroup}{inviteLink}{studio}{contactEmail}{contactAddress}`；
+  **缺考与未通过初筛一律不发信**；发信失败不阻断流转。
+- 关闭本届：导出 CSV → 清库（含报名表文件、发信日志、签到凭证）→ 回到休眠；**对象存储没接通就拒绝关闭**。
+  没有 Cron（`wrangler.toml` 无 `[triggers]`），缺考在「结束考试」动作里一次标完。
+- 自检：`scripts/smoke-applications.ps1`（71 项，跑前需服务在 8787；`smoke-sessions.ps1` 已删）。
+  **跑自检时不要把输出接到 `Select-Object -First N`** —— 上游 pwsh 会继续跑，导致两条自检互相推进状态机。
+- 旧版页面仍留在 `backup/recruit-legacy/src/admin/recruit/`（不参与编译），功能已全部搬完，可随时删。
 - **状态用「阶段 + 结果」两列**，不是单列枚举：`stage` ∈ apply/written/interview/defense/onboard，
   `result` ∈ ''（待定）/attended/passed/failed/absent/declined/withdrawn。
   「是否已安排笔试/面试」不再是个人状态，而是**全局周期时间窗**；中文标签由 `applicationLabel(stage,result)` 派生、**不入库**。
@@ -68,10 +64,11 @@
   **`shared/time.ts` 是北京时间工具**（`cnTimeToEpoch`/`cnTimeToText`/`cnTimeToShort`）——
   服务器在 UTC，**绝不能** `new Date('2026-09-25T09:00')`，会差 8 小时。
 - **周期配置存 D1 `site_config['recruit']`**（刻意不放 runtime：runtime 是每个访客都会拉的公开配置，
-  模板正文不该下发给所有人），无迁移。  `recruitPhase()` 派生 not_configured/upcoming/applying/in_progress/closed；
-  **报名通道 = 在报名时间窗内 且 尚未确认笔试名单**（`isApplyOpen()` 判定，周期 `writtenConfirmedAt` 非空即关）。
-  `site.recruitOpen` 手动总开关**正在移除**、改为由周期派生（0–9 复审定案）。非招新期后台「报名/成绩/自动流程」三页显示未开始/已结束，
-  周期与模板页始终可进。
+  模板正文不该下发给所有人），无迁移。
+  ⚠️ **2026-09-25 起「时间窗 / recruitPhase / site.recruitOpen」这套已整体作废** ——
+  报名通道只由 `state === 'apply'` 决定（`isApplyOpen(state)`），整届状态与动作见上面「最终形态」一节。
+  读 `site_config['recruit']` 时注意库里可能留着旧版本写下的键（applyStart / archives / …）：
+  `mergeCycle` 现在逐字段取值并校验 `state`，不要把旧 JSON 直接铺开回显。
 - **自动流程六个任务**（`/api/admin/recruit/auto` GET 预览 → POST 执行，`worker/lib/recruit-auto.ts`）：
   `confirm_written`（报名→笔试 + 笔试邀请）→ `mark_absent`（宽限期内未签到→absent）→
   `advance_written`（按前 N 名/分数线 → interview + 面试邀请 / failed + 感谢信）→
