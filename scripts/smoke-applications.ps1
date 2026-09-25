@@ -3,7 +3,7 @@
 #
 # 覆盖：
 #   1) 周期配置：时间窗决定报名通道开闭（未开始 / 报名中 / 已结束）
-#   2) 学生提交报名表（multipart + 文件头校验 + 落对象存储 + 落库）
+#   2) 学生提交报名表（multipart + 文件头校验 + 落对象存储 + 落库 + 重命名为「姓名+学号+报名表」）
 #   3) 报名表私有性：匿名与学生本人都拿不到，只有管理员能下载
 #   4) 扫码签到：先建场次 → 签发二维码 → 凭 token 签到，签到后状态变「已参加」并记下签的哪一场
 #   5) 自动流程（预览 → 执行）：缺考标记、按成绩生成面试名单、
@@ -132,6 +132,7 @@ try {
         $raw = & curl.exe -s -X POST "$Base/api/applications" -H "Cookie: $($s.token)" -F "file=@$pdfPath;type=application/pdf" -F "email=$($s.id.ToLower())@example.edu.cn" -F 'phone=13800000000' -F 'qq=123456'
         $created = $raw | ConvertFrom-Json
         Check "$($s.name) 提交成功且 stage=apply/result 空" ($created.ok -eq $true -and $created.data.stage -eq 'apply' -and $created.data.result -eq '') $raw
+        Check "$($s.name) 报名表被重命名为「姓名+学号+报名表」" ($created.data.fileName -eq "$($s.name)+$($s.id)+报名表.pdf") $created.data.fileName
         $appIds[$s.key] = $created.data.id
     }
     Check '重复提交被拒 409' ((& curl.exe -s -o NUL -w '%{http_code}' -X POST "$Base/api/applications" -H "Cookie: $($students[0].token)" -F "file=@$pdfPath;type=application/pdf" -F 'email=x@b.com' -F 'phone=13800000000' -F 'qq=123456') -eq '409')

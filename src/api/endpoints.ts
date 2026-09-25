@@ -407,6 +407,106 @@ export function adminGetRecruitMails(limit = 200) {
   return apiRequest<{ logs: MailLogRow[] }>(`/api/admin/recruit/mails?limit=${limit}`)
 }
 
+// ===== 招新（后台：考试场次与签到二维码） =====
+
+/** 后台看到的场次：比契约多出派生称呼、时间文本与到场人数 */
+export interface AdminSession {
+  id: string
+  stage: CheckinStage
+  name: string
+  startsAt: string
+  endsAt: string
+  place: string
+  note: string
+  sortOrder: number
+  /** 场次称呼（没填名字时按该阶段序号兜底） */
+  label: string
+  stageLabel: string
+  /** 时间文本，如「2026 年 10 月 8 日 14:00–16:00」 */
+  timeText: string
+  checkinCount: number
+}
+
+/** 仍有效的签到二维码（同一场次至多一张） */
+export interface AdminCheckinCode {
+  sessionId: string
+  stage: string
+  sessionLabel: string
+  expiresAt: string
+  url: string
+  createdBy: string
+  createdAt: string
+}
+
+export interface AdminSessionsPayload {
+  sessions: AdminSession[]
+  codes: AdminCheckinCode[]
+}
+
+export function adminListSessions() {
+  return apiRequest<AdminSessionsPayload>('/api/admin/recruit/sessions')
+}
+
+export interface SessionInput {
+  stage: CheckinStage
+  name?: string
+  startsAt: string
+  endsAt?: string
+  place?: string
+  note?: string
+  sortOrder?: number
+}
+
+export function adminCreateSession(body: SessionInput) {
+  return apiRequest<{ session: AdminSession }>(
+    '/api/admin/recruit/sessions',
+    jsonInit('POST', body),
+  )
+}
+
+export function adminUpdateSession(id: string, body: Partial<SessionInput>) {
+  return apiRequest<{ session: AdminSession }>(
+    `/api/admin/recruit/sessions/${encodeURIComponent(id)}`,
+    jsonInit('PUT', body),
+  )
+}
+
+export function adminDeleteSession(id: string) {
+  return apiRequest<{ id: string }>(
+    `/api/admin/recruit/sessions/${encodeURIComponent(id)}`,
+    jsonInit('DELETE'),
+  )
+}
+
+export interface IssuedCheckinCode {
+  token: string
+  expiresAt: string
+  /** 二维码里要编码的绝对地址 */
+  url: string
+  sessionId: string
+  stage: CheckinStage
+  sessionLabel: string
+}
+
+/**
+ * 签发该场次的签到二维码。**会把该场旧码一并作废**（同一场次至多一张有效码），
+ * 因为二维码会被拍照转发，重发往往正是因为旧码泄了。
+ */
+export function adminIssueCheckinToken(sessionId: string, ttlHours?: number) {
+  return apiRequest<IssuedCheckinCode>(
+    `/api/admin/recruit/sessions/${encodeURIComponent(sessionId)}/checkin-token`,
+    jsonInit('POST', ttlHours ? { ttlHours } : {}),
+  )
+}
+
+/** 作废签到二维码：给 sessionId 只作废那一场，否则作废全部 */
+export function adminRevokeCheckinTokens(sessionId?: string) {
+  return apiRequest<{ revoked: number }>(
+    '/api/admin/recruit/checkin-tokens/revoke',
+    jsonInit('POST', sessionId ? { sessionId } : {}),
+  )
+}
+
 // ===== 招新（后台：报名明细） =====
 
 /** 后台视图比学生视图多出邀请链接与派生标签 */

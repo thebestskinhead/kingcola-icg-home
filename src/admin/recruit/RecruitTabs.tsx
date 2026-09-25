@@ -5,17 +5,7 @@ import type { AdminRecruitSettings } from '@/api/endpoints'
 import { RECRUIT_PHASE_LABELS, type RecruitPhase } from '@shared/recruit'
 import { cn } from '@/lib/utils'
 import { AlertTriangle, CalendarCog, Loader2 } from 'lucide-react'
-
-/** 招新模块的子模块（后台侧栏只有一个「招新」入口，内部用页签切换） */
-const TABS = [
-  { to: '/admin/recruit', label: '看板', end: true, ops: false },
-  { to: '/admin/recruit/cycle', label: '周期与签到', end: false, ops: false },
-  { to: '/admin/recruit/applications', label: '报名管理', end: false, ops: true },
-  { to: '/admin/recruit/scores', label: '成绩录入', end: false, ops: true },
-  { to: '/admin/recruit/auto', label: '自动流程', end: false, ops: true },
-  { to: '/admin/recruit/templates', label: '邮件模板', end: false, ops: false },
-  { to: '/admin/recruit/mails', label: '邮件日志', end: false, ops: false },
-]
+import { RECRUIT_TABS } from './recruit-pages'
 
 const PHASE_TONE: Record<RecruitPhase, string> = {
   not_configured: 'bg-amber-500/10 text-amber-700',
@@ -25,10 +15,7 @@ const PHASE_TONE: Record<RecruitPhase, string> = {
   closed: 'bg-secondary text-muted-foreground',
 }
 
-/**
- * 页签栏 + 阶段徽章。
- * `ops` 的页签是「招生期才开放」的：非招新期点进去会看到友好提示而不是空表格。
- */
+/** 页签栏 + 阶段徽章 */
 export function RecruitTabs({
   settings,
   loading,
@@ -41,7 +28,7 @@ export function RecruitTabs({
   return (
     <div className="mb-5 flex flex-wrap items-center gap-3">
       <nav className="flex flex-wrap gap-1.5">
-        {TABS.map((tab) => (
+        {RECRUIT_TABS.map((tab) => (
           <NavLink
             key={tab.to}
             to={tab.to}
@@ -78,7 +65,7 @@ export function RecruitTabs({
 
 /**
  * 招生期才开放的页面守卫。
- * 非招新期（未开始 / 已结束）不展示空表格，而是明确告诉他去「周期与签到」配时间窗。
+ * 非招新期（未开始 / 已结束）不展示空表格，而是明确告诉他去「准备」里配时间窗。
  */
 export function RecruitOpsGuard({
   settings,
@@ -108,14 +95,14 @@ export function RecruitOpsGuard({
         <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{settings.notice}</p>
         <p className="mt-2 text-xs text-muted-foreground">
           {settings.phase === 'closed'
-            ? '报名数据已在关闭时归档并清空，可在「周期与签到」里查看往届存档。'
+            ? '报名数据已在关闭时归档并清空。'
             : '把报名开始与截止时间填好，到点会自动开启报名通道。'}
         </p>
         <NavLink
-          to="/admin/recruit/cycle"
+          to="/admin/recruit/prepare"
           className="mt-6 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2 text-sm text-primary-foreground transition-opacity hover:opacity-85"
         >
-          <CalendarCog className="h-4 w-4" /> 去设置招新周期
+          <CalendarCog className="h-4 w-4" /> 去准备招新周期
         </NavLink>
       </div>
     )

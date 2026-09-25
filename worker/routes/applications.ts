@@ -17,6 +17,7 @@ import { RESOURCES, formatLimit } from '../../shared/resources'
 import {
   APPLICATION_DOC_LIMIT,
   APPLICATION_DOC_SCOPE,
+  applicationDocFileName,
   checkinEligibility,
   isApplyOpen,
   isCheckinTokenUsable,
@@ -174,7 +175,8 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
       phone: input.phone.trim(),
       qq: input.qq.trim(),
       fileUrl: storage.objectUrl(key),
-      fileName: filename || `application.${kind.ext}`,
+      // 统一重命名为「姓名+学号+报名表」，同学原来的「简历(1).pdf」一律不用
+      fileName: applicationDocFileName(me.name, me.studentId, kind.ext),
       fileSize: file.size,
     })
   } catch (error) {

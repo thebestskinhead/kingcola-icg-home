@@ -230,6 +230,20 @@ export const RECRUIT_ARCHIVE_SCOPE = `${APPLICATION_DOC_SCOPE}/archives`
 
 export const APPLICATION_DOC_ACCEPT = '.pdf,.docx'
 
+/**
+ * 报名表的「对外文件名」：姓名+学号+报名表。
+ *
+ * 同学上传时多半叫「个人简历.pdf」「报名表(1).pdf」，一堆重名根本分不出是谁，
+ * 所以统一在入库时重命名 —— 管理员下载、归档拿到的那一份文件名就是他本人。
+ *
+ * 注意：这只是**下载时用的名字**（存 file_name），桶内对象 key 仍走
+ * `buildObjectKey()` 的随机 ASCII 名 —— key 要保证唯一、便于长缓存，
+ * 而中文 key 还会让 `/api/files/*` 的路径解析与百分号编码变得别扭。
+ */
+export function applicationDocFileName(name: string, studentId: string, ext: string): string {
+  return `${name.trim()}+${studentId.trim()}+报名表.${ext}`
+}
+
 export const APPLICATION_DOC_HINT = `支持 PDF / DOCX，单个文件不超过 ${formatLimit(
   APPLICATION_DOC_LIMIT,
 )}。仅修改后缀的文件无法通过校验。`

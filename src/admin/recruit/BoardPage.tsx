@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 import { Loader2, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { RecruitTabs } from './RecruitTabs'
+import { RECRUIT_TASK_PAGE } from './recruit-pages'
 import { useRecruitSettings } from './useRecruitSettings'
 
 const FUNNEL_TONE: Record<RecruitStage, string> = {
@@ -107,7 +108,8 @@ export function BoardPage() {
                 return (
                   <NavLink
                     key={task}
-                    to="/admin/recruit/auto"
+                    // 每个任务只属于一个阶段，待办卡直接跳到那个阶段页（操作卡就在页面里）
+                    to={RECRUIT_TASK_PAGE[task]}
                     className={cn(
                       'flex items-start justify-between gap-3 rounded-lg border px-4 py-3 transition-colors',
                       count > 0

@@ -23,46 +23,18 @@ import { Switch } from '@/components/ui/switch'
 import { adminRunRecruitAuto, adminSaveRecruit } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import { DEFAULT_RECRUIT_CYCLE, RECRUIT_PHASE_LABELS, type RecruitCycleConfig } from '@shared/recruit'
-import { cnTimeToShort } from '@shared/time'
 import { cn } from '@/lib/utils'
-import { Download, Loader2, Power, Save } from 'lucide-react'
+import { Loader2, Power, Save } from 'lucide-react'
 import { toast } from 'sonner'
 import { RecruitTabs } from './RecruitTabs'
 import { useRecruitSettings } from './useRecruitSettings'
 
-/** 只读的存档列表（关闭本届时自动生成 CSV 存进对象存储） */
-function Archives({ cycle }: { cycle: RecruitCycleConfig }) {
-  if (cycle.archives.length === 0) {
-    return <p className="text-xs text-muted-foreground">还没有往届存档。本届关闭时会自动导出一份完整名单。</p>
-  }
-  return (
-    <div className="space-y-2">
-      {[...cycle.archives].reverse().map((archive) => (
-        <div
-          key={`${archive.name}-${archive.closedAt}`}
-          className="flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2 text-xs"
-        >
-          <span className="font-medium">{archive.name}</span>
-          <span className="text-muted-foreground">
-            {cnTimeToShort(archive.closedAt)} 关闭 · 报名 {archive.total} 人 · 转正 {archive.members} 人
-          </span>
-          {archive.url ? (
-            <a
-              href={archive.url}
-              className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 hover:bg-secondary"
-            >
-              <Download className="h-3.5 w-3.5" /> 下载名单
-            </a>
-          ) : (
-            <span className="ml-auto text-amber-700">未生成（当时对象存储未接通）</span>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-/** 招新周期与签到设置：整届的时间窗、自动流程参数、签到入口、关闭与存档。 */
+/**
+ * 招新周期设置：整届的时间窗、自动流程参数，以及关闭本届。
+ *
+ * 往届存档刻意不在这里列出 —— 关闭时导出的 CSV 留在对象存储里，
+ * 后台页面不体现（需要翻旧账直接去桶里找 `applications/archives/`）。
+ */
 export function CyclePage() {
   const { settings, loading, reload } = useRecruitSettings()
   const [draft, setDraft] = useState<RecruitCycleConfig>(DEFAULT_RECRUIT_CYCLE)
@@ -289,13 +261,13 @@ export function CyclePage() {
           </div>
         </section>
 
-        {/* 危险操作与存档 */}
+        {/* 关闭本届 */}
         <section className="rounded-xl border border-border bg-card p-5">
-          <h2 className="mb-2 text-sm font-semibold">关闭与存档</h2>
+          <h2 className="mb-2 text-sm font-semibold">关闭本届</h2>
           <p className="mb-4 text-[11px] leading-relaxed text-muted-foreground">
-            关闭会**先导出一份完整名单 CSV 存进对象存储**，然后清空报名数据、报名表文件与发信日志。
+            关闭会**先导出一份完整名单 CSV 存进对象存储**（作为清空前的留底，后台不再列出往届存档），
+            然后清空报名数据、报名表文件与发信日志。
           </p>
-          <Archives cycle={draft} />
           <div className="mt-4 flex flex-wrap gap-3">
             <Button
               variant="outline"
