@@ -1,5 +1,6 @@
 import { Link, NavLink } from 'react-router'
 import { StudioLogo } from '@/components/brand'
+import type { RecruitPhaseInfo } from '@/api/endpoints'
 import { PAGE_LABELS, PAGE_PATHS, type PageKey, type SiteConfig } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -9,7 +10,7 @@ import { cn } from '@/lib/utils'
  */
 const NAV_ORDER: PageKey[] = ['home', 'news', 'projects', 'members', 'join']
 
-export function Header({ site }: { site: SiteConfig }) {
+export function Header({ site, recruit }: { site: SiteConfig; recruit?: RecruitPhaseInfo }) {
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
@@ -59,9 +60,12 @@ export function Header({ site }: { site: SiteConfig }) {
         ))}
       </nav>
 
-      {site.recruitOpen && (
+      {/* 招新提示：由招新周期自动派生 —— 报名中 / 流程进行中都提示，文案按报名是否还开着区分 */}
+      {recruit && (recruit.phase === 'applying' || recruit.phase === 'in_progress') && (
         <div className="bg-emerald-500/10 px-4 py-1.5 text-center text-xs text-emerald-700">
-          招新进行中：「加入我们」报名通道已开放
+          {recruit.applyOpen
+            ? '招新进行中：「加入我们」报名通道已开放'
+            : '招新进行中：本届报名已截止，笔试与面试正在安排'}
         </div>
       )}
     </header>

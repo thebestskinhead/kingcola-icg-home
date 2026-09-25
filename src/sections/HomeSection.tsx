@@ -8,6 +8,7 @@ import {
   type SiteConfig,
   type Slide,
 } from '@/types'
+import type { RecruitPhaseInfo } from '@/api/endpoints'
 import { parseStatLabels, splitParagraphs } from '@shared/site'
 import { ArrowRight, ArrowUpRight, Award, Users, FolderKanban, UserCheck, Newspaper } from 'lucide-react'
 import { HeroCarousel } from '@/sections/HeroCarousel'
@@ -20,12 +21,15 @@ export function HomeSection({
   projects,
   slides,
   site,
+  recruit,
 }: {
   members: Member[]
   news: NewsItem[]
   projects: Project[]
   slides: Slide[]
   site: SiteConfig
+  /** 招新状态（来自首屏聚合）；报名进行中才显示横幅 —— 笔试/面试期间的横幅只会误导人来报名 */
+  recruit?: RecruitPhaseInfo
 }) {
   const currentCount = members.filter((m) => m.status === 'current').length
   const alumniCount = members.filter((m) => m.status === 'alumni').length
@@ -44,8 +48,8 @@ export function HomeSection({
       {/* ===== 轮播图 ===== */}
       <HeroCarousel slides={slides} />
 
-      {/* ===== 招新横幅：由服务端站点配置控制 ===== */}
-      {site.recruitOpen && (
+      {/* ===== 招新横幅：报名进行中才出现，由招新周期自动派生 ===== */}
+      {recruit?.phase === 'applying' && (
         <section className="animate-fade-up bg-primary text-primary-foreground">
           <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-6 px-4 py-12 sm:flex-row sm:items-center sm:px-6">
             <div>

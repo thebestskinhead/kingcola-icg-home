@@ -7,7 +7,9 @@
 
 import { RESOURCES, isResourceKey } from '../../shared/resources'
 import { isSsoReady } from '../../shared/runtime'
+import { isApplyOpen, recruitNotice, recruitPhase } from '../../shared/recruit'
 import { cacheable, fail, ok } from '../lib/http'
+import { getRecruitSettings } from '../lib/recruit-config'
 import { getSiteConfig, listEntities } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
 import { getStorageConfig, targetReady } from '../lib/storage'
@@ -38,15 +40,24 @@ export async function getPublicContent(ctx: RequestContext): Promise<Response> {
 
 /** 前台首屏聚合接口：一次请求拿全部内容 */
 export async function getBootstrap(ctx: RequestContext): Promise<Response> {
-  const [members, projects, news, slides, site] = await Promise.all([
+  const [members, projects, news, slides, site, recruitSettings] = await Promise.all([
     listEntities(ctx.env, RESOURCES.members, { limit: 500 }),
     listEntities(ctx.env, RESOURCES.projects, { limit: 200 }),
     listEntities(ctx.env, RESOURCES.news, { limit: 200 }),
     listEntities(ctx.env, RESOURCES.slides, { limit: 20 }),
     getSiteConfig(ctx.env),
+    // 招新状态顺带带上：首页横幅与顶部提示的显隐由它派生，前台不必再发一次请求
+    getRecruitSettings(ctx.env),
   ])
 
-  return cacheable({ members, projects, news, slides, site }, PUBLIC_MAX_AGE)
+  const recruit = {
+    phase: recruitPhase(recruitSettings.cycle),
+    applyOpen: isApplyOpen(recruitSettings.cycle),
+    name: recruitSettings.cycle.name,
+    notice: recruitNotice(recruitSettings.cycle),
+  }
+
+  return cacheable({ members, projects, news, slides, site, recruit }, PUBLIC_MAX_AGE)
 }
 
 /** 无副作用探活，用于部署自检与前端调试 */

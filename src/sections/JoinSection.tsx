@@ -221,8 +221,8 @@ export function JoinSection({ site }: { site: SiteConfig }) {
     }
   }
 
-  // ===== 报名通道是否开放：总开关 × 本轮的报名时间窗 =====
-  const applyOpen = site.recruitOpen && (cycle?.applyOpen ?? false)
+  // ===== 报名通道是否开放：由招新周期自动派生（时间窗内 且 尚未确认笔试名单） =====
+  const applyOpen = cycle?.applyOpen ?? false
   const phase = cycle?.phase ?? 'not_configured'
   const hasApplication = Boolean(application)
 
@@ -242,9 +242,6 @@ export function JoinSection({ site }: { site: SiteConfig }) {
         title: '报名已截止',
         desc: '本次报名通道已关闭；已报名的同学登录后可继续查看自己的进度。',
       }
-    }
-    if (!site.recruitOpen) {
-      return { title: '当前不在招新期', desc: '报名通道暂未开放，也欢迎先通过页脚邮箱与我们联系。' }
     }
     return { title: '招新时间尚未公布', desc: '请稍后再来，或先通过页脚邮箱与我们取得联系。' }
   })()

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, getRuntimeConfig, getSiteConfig, isInitialized, refreshRuntimeConfig } from './client'
-import { fetchBootstrap, type BootstrapData } from './endpoints'
+import { fetchBootstrap, type BootstrapData, type RecruitPhaseInfo } from './endpoints'
 import type { SsoTarget } from '@shared/runtime'
 import { DEFAULT_SITE_CONFIG, type SiteConfig } from '@shared/types'
 import { SEED_BY_RESOURCE } from '@shared/seed'
@@ -13,6 +13,8 @@ const FALLBACK: BootstrapData = {
   news: SEED_BY_RESOURCE.news as BootstrapData['news'],
   slides: SEED_BY_RESOURCE.slides as BootstrapData['slides'],
   site: DEFAULT_SITE_CONFIG,
+  // 接口不可达时按「未配置」处理：不显示招新横幅，也不显示「已结束」
+  recruit: { phase: 'not_configured', applyOpen: false, name: '', notice: '' } satisfies RecruitPhaseInfo,
 }
 
 export interface AsyncState<T> {

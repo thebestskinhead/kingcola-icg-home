@@ -177,7 +177,6 @@ try {
         joinRequirements = "要求一`n要求二`n要求三"
         marqueeText      = 'SMOKE · TEST · '
         footerCopyright  = '© {year} 冒烟测试'
-        recruitOpen      = $true
         recruitTitle     = '冒烟测试招新标题'
         logoUrl          = ''
     }

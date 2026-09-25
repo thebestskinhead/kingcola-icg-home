@@ -33,12 +33,24 @@ import { apiRequest, jsonInit } from './client'
 
 // ===== 公开只读 =====
 
+/**
+ * 首屏聚合里顺带带的招新状态。
+ * 首页横幅、顶部提示的显隐由它派生 —— 不必再发一次请求，也没有「招新总开关」可配。
+ */
+export interface RecruitPhaseInfo {
+  phase: RecruitPhase
+  applyOpen: boolean
+  name: string
+  notice: string
+}
+
 export interface BootstrapData {
   members: Member[]
   projects: Project[]
   news: NewsItem[]
   slides: Slide[]
   site: SiteConfig
+  recruit: RecruitPhaseInfo
 }
 
 export function fetchBootstrap(signal?: AbortSignal) {

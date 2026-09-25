@@ -219,7 +219,8 @@ export function invitePath(token: string): string {
 
 export interface SiteConfig {
   // ---- 招新 ----
-  recruitOpen: boolean
+  // 刻意没有「招新总开关」：招新模式由招新周期自动派生（报名时间窗内 + 尚未确认笔试名单），
+  // 管理员只需要在后台「招新 → 准备」里填好时间，不需要惦记开关。
   recruitTitle: string
   recruitDesc: string
 
@@ -261,7 +262,6 @@ export interface SiteConfig {
 }
 
 export const DEFAULT_SITE_CONFIG: SiteConfig = {
-  recruitOpen: true,
   recruitTitle: '2026 年秋季招新进行中',
   recruitDesc:
     '无论你想写前端、做后端、搞算法还是做设计，这里都有真实的项目等着你。零基础但学习意愿强的同学同样欢迎。',

@@ -71,7 +71,7 @@ function PublicSite() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <Header site={site} />
+      <Header site={site} recruit={data?.recruit} />
 
       {usingFallback && (
         <div className="flex items-center justify-center gap-2 bg-amber-500/10 px-4 py-1.5 text-center text-xs text-amber-700">
@@ -93,7 +93,14 @@ function PublicSite() {
             <Route
               path={PAGE_PATHS.home}
               element={
-                <HomeSection members={members} news={news} projects={projects} slides={slides} site={site} />
+                <HomeSection
+                  members={members}
+                  news={news}
+                  projects={projects}
+                  slides={slides}
+                  site={site}
+                  recruit={data?.recruit}
+                />
               }
             />
             <Route path={PAGE_PATHS.members} element={<MembersSection members={members} />} />

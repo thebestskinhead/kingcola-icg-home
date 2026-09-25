@@ -135,7 +135,7 @@ export function InviteSection({ site }: { site: SiteConfig }) {
         <PartyPopper className="mx-auto h-10 w-10 text-accent" />
         <h1 className="mt-4 font-display text-2xl font-bold">欢迎加入 {site.studioName}</h1>
         <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-          成员档案已建立。管理员补充头像与简介后，你会在官网「团队成员」页面看到自己。
+          成员档案已建立。等头像与简介补充完整，你就会出现在官网「团队成员」页面。
         </p>
         <Link
           to={PAGE_PATHS.members}

@@ -279,16 +279,7 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
         {/* ===== 招新与加入我们 ===== */}
         <TabsContent value="recruit" className="mt-5 rounded-2xl border border-border bg-card p-5 sm:p-6">
           <div className="grid gap-5">
-            <div className="flex items-center justify-between rounded-xl border border-border px-4 py-3">
-              <div>
-                <div className="text-sm font-medium">开放招新报名</div>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  关闭后「加入我们」不再提供报名入口，首页招新横幅与顶部提示也会隐藏
-                </p>
-              </div>
-              <Switch checked={site.recruitOpen} onCheckedChange={(checked) => patch({ recruitOpen: checked })} />
-            </div>
-
+            {/* 招新总开关已移除：报名入口与首页横幅由招新周期自动派生（见后台「招新 → 准备」） */}
             <Field label="首页招新横幅标题">
               <Input value={site.recruitTitle} onChange={(e) => patch({ recruitTitle: e.target.value })} />
             </Field>
