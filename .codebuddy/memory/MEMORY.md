@@ -38,7 +38,27 @@
 - 已本地端到端冒烟全绿（配置读写/上传/读取/一次性令牌 #1=200 #2=403/applications 匿名 404）。冒烟技巧：kc_admin Cookie 恒带 `Secure`，本地 HTTP 下必须从 cookie jar 手动取 token 回传 `cookie:` 头；PS 内联 JSON 用 `--data-binary $body` 变量（`{\"..\"}` 转义会发非法体）。
 - 业务口约定：站点图 URL 可存 `/api/files/<key>` 或 publicBase 直链；`resolveFileRef()` 两种前缀都能反解。applications/ 前缀仍是私有文件。
 
-## 招新系统（applications · 2026-09-25 重构为整届流水线）
+## 招新系统 · 后台页现状（2026-09-25 定案，重要）
+- **`/admin/recruit` 现在渲染 `src/admin/recruit/DemoEventDrivenPage.tsx`（全假数据，接口未接）**，
+  信息架构：休眠大屏 → 启动 →「备招 → 报名 → 笔试 → 面试 → 答辩 → 转正 → 归档」，
+  **整届没有任何时间字段**，阶段开与关全靠按钮；报名结束拆成「结束报名」与「确认名单」两个动作；
+  签到二维码只绑阶段（自选有效期 / 生成新码自动作废旧码 / 可作废）；没有场次概念。
+  顶层四个视图：流程 / 名单 / 邮件日志 / 设置（共用 `useDemoRecruit` 一份状态，
+  假数据与纯函数在 `demo-model.ts`）。用户明确：**界面这轮先假数据，接口接线下一轮**。
+- **旧版按阶段拆开的页面已整体归档**到 `backup/recruit-legacy/src/admin/recruit/`（保持原路径可整目录还原），
+  已从 `src` 移除、旧路由全部摘掉。它们**不被 tsc/eslint 编译**（`tsconfig.app.json` 只 include `src`），
+  接线时照备份逐块搬功能，搬完再删备份。
+- **待用户确认 demo 后再动的后端改造**（已定方向，别提前做）：
+  ① 场次概念整体删除（`recruit_sessions` 表、`applications` 的 3 个 `*_session_id` 列、`admin-sessions` 路由、
+  `shared/recruit.ts` 里的 `RecruitSession` 一族与 `sessionPanel`）；签到凭证只绑阶段；
+  ② 周期里的时间字段全删（报名起止、笔试/面试时间地点、`writtenConfirmedAt`、`onboardDeadline`、
+  `recruitPhase()`/`isApplyOpen()` 的时间判定、Cron 的缺考与到点关闭），改为**管理员动作驱动的状态**；
+  ③ 邮件模板不再有任何时间地点：变量删掉 `{writtenAt}/{writtenPlace}/{writtenSessions}/{interview*}`，
+  改为 `{writtenGroup}/{interviewGroup}/{probationGroup}/{formalGroup}`（四个 QQ 群号，见 demo 备招面板），
+  正文写「安排见对应的 QQ 群」。用户口径：**所有邀请信均不含时间信息，一律通过对应 QQ 群通知**；
+  ④ 笔试进行时只有三件事：生成带时效的签到二维码 / 补签 / 补录；面试进行时同笔试但**少补录**。
+
+## 招新系统（applications · 2026-09-25 重构为整届流水线，后端部分已实现）
 - **状态用「阶段 + 结果」两列**，不是单列枚举：`stage` ∈ apply/written/interview/defense/onboard，
   `result` ∈ ''（待定）/attended/passed/failed/absent/declined/withdrawn。
   「是否已安排笔试/面试」不再是个人状态，而是**全局周期时间窗**；中文标签由 `applicationLabel(stage,result)` 派生、**不入库**。
