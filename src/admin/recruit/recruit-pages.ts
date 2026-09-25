@@ -24,7 +24,7 @@ export const RECRUIT_TABS: ReadonlyArray<{ to: string; label: string; end: boole
   { to: '/admin/recruit/defense', label: '答辩', end: false },
   { to: '/admin/recruit/onboard', label: '转正', end: false },
   { to: '/admin/recruit/roster', label: '名单', end: false },
-  { to: '/admin/recruit/settings', label: '设置', end: false },
+  { to: '/admin/recruit/templates', label: '邮件模板', end: false },
   { to: '/admin/recruit/mails', label: '邮件日志', end: false },
 ]
 

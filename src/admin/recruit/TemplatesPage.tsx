@@ -18,6 +18,7 @@ import {
 import { cn } from '@/lib/utils'
 import { AlertTriangle, Loader2, Save } from 'lucide-react'
 import { toast } from 'sonner'
+import { RecruitTabs } from './RecruitTabs'
 import { useRecruitSettings } from './useRecruitSettings'
 
 /** 预览用的假数据：让管理员点开就能看到真实信件长什么样 */
@@ -41,10 +42,8 @@ const SAMPLE_VARS: Record<string, string> = {
 /**
  * 邮件模板中心：5 类共 7 条模板（感谢信按阶段分 3 条）的主题与正文都在这里改。
  * 支持 `{变量}` 占位，右侧实时预览；写错的变量会当场标出来。
- *
- * 作为「招新 → 设置」里的一个标签页嵌入（不再单独占一个页签）。
  */
-export function TemplatesPanel() {
+export function TemplatesPage() {
   const { settings, loading, reload } = useRecruitSettings()
   const [draft, setDraft] = useState<RecruitTemplates | null>(null)
   const [active, setActive] = useState<RecruitMailKind>('written_invite')
@@ -56,8 +55,11 @@ export function TemplatesPanel() {
 
   if (loading || !draft) {
     return (
-      <div className="flex justify-center py-20">
-        <Loader2 className="h-6 w-6 animate-spin text-accent" />
+      <div className="mx-auto max-w-5xl">
+        <RecruitTabs settings={settings} loading={loading} onReload={reload} />
+        <div className="flex justify-center py-20">
+          <Loader2 className="h-6 w-6 animate-spin text-accent" />
+        </div>
       </div>
     )
   }
@@ -85,10 +87,12 @@ export function TemplatesPanel() {
   }
 
   return (
-    <div>
+    <div className="mx-auto max-w-5xl">
+      <RecruitTabs settings={settings} loading={loading} onReload={reload} />
+
       <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 className="font-display text-2xl font-bold">邮件模板</h2>
+          <h1 className="font-display text-2xl font-bold">邮件模板</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             状态推进时按模板自动发信；停用某条模板后状态照常流转，只是不发这封信。
           </p>

@@ -32,6 +32,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import {
   ArrowRight,
@@ -45,6 +47,7 @@ import {
   UserPlus,
   Users,
 } from 'lucide-react'
+import { RECRUIT_MAIL_KINDS, RECRUIT_MAIL_META, type RecruitMailKind } from '@shared/recruit'
 import { toast } from 'sonner'
 
 // ---------------------------------------------------------------------------
@@ -176,6 +179,104 @@ function expiryTextOf(hours: number): string {
 // 页面
 // ---------------------------------------------------------------------------
 
+/**
+ * 「设置」mock：内部标签页切换 —— 邮件模板 / 招新与加入我们（原系统设置里的那块迁到这里）。
+ * 全部假数据，只用于确认信息架构。
+ */
+function SettingsMock() {
+  const kinds = RECRUIT_MAIL_KINDS
+  const [active, setActive] = useState<RecruitMailKind>('written_invite')
+  const [mail, setMail] = useState({
+    subject: '【拾光工作室】笔试邀请 · 张同学',
+    body: '张同学：\n\n你好！感谢你报名 2026 年秋季招新，你的报名表我们已经收到并通过初筛。\n\n具体安排请加入笔试通知 QQ 群：123456789。\n',
+  })
+  const [join, setJoin] = useState({
+    recruitTitle: '2026 年秋季招新进行中',
+    recruitDesc: '无论你想写前端、做后端、搞算法还是做设计，这里都有真实的项目等着你。',
+    joinTitle: '加入我们',
+    joinIntro: '每年秋天，我们面向全校招募一批新成员。',
+    joinSteps: '扫码完成身份认证 | 使用微信扫描二维码\n填写报名信息 | 上传你的报名表',
+    joinRequirements: '对技术有好奇心\n每周能保证一定的投入时间',
+  })
+
+  return (
+    <Tabs defaultValue="mail">
+      <TabsList>
+        <TabsTrigger value="mail">邮件模板</TabsTrigger>
+        <TabsTrigger value="join">招新与加入我们</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="mail" className="mt-4">
+        <div className="grid gap-4 lg:grid-cols-[13rem_1fr]">
+          <div className="space-y-1">
+            {kinds.map((kind) => (
+              <button
+                key={kind}
+                onClick={() => setActive(kind)}
+                className={cn(
+                  'w-full rounded-lg border px-3 py-2 text-left text-xs transition-colors',
+                  active === kind
+                    ? 'border-transparent bg-primary text-primary-foreground'
+                    : 'border-border text-foreground/70 hover:bg-secondary',
+                )}
+              >
+                {RECRUIT_MAIL_META[kind].label}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-3 rounded-xl border border-border bg-card p-5">
+            <div className="grid gap-1.5">
+              <Label className="text-xs">主题</Label>
+              <Input value={mail.subject} onChange={(e) => setMail({ ...mail, subject: e.target.value })} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label className="text-xs">正文</Label>
+              <Textarea rows={12} value={mail.body} onChange={(e) => setMail({ ...mail, body: e.target.value })} />
+              <p className="text-[11px] text-muted-foreground">
+                所有邮件都不写时间与地点 —— 安排一律通过对应的 QQ 群通知。
+              </p>
+            </div>
+            <Button size="sm" onClick={() => toast.success('已保存（Demo）')}>保存</Button>
+          </div>
+        </div>
+      </TabsContent>
+
+      <TabsContent value="join" className="mt-4 rounded-2xl border border-border bg-card p-5 sm:p-6">
+        <div className="grid gap-5">
+          <div className="grid gap-1.5">
+            <Label className="text-xs">首页招新横幅标题</Label>
+            <Input value={join.recruitTitle} onChange={(e) => setJoin({ ...join, recruitTitle: e.target.value })} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label className="text-xs">首页招新横幅描述</Label>
+            <Textarea rows={2} value={join.recruitDesc} onChange={(e) => setJoin({ ...join, recruitDesc: e.target.value })} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label className="text-xs">「加入我们」页面标题</Label>
+            <Input value={join.joinTitle} onChange={(e) => setJoin({ ...join, joinTitle: e.target.value })} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label className="text-xs">「加入我们」页面描述</Label>
+            <Textarea rows={2} value={join.joinIntro} onChange={(e) => setJoin({ ...join, joinIntro: e.target.value })} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label className="text-xs">招新流程（每行一条「标题 | 描述」）</Label>
+            <Textarea rows={4} value={join.joinSteps} onChange={(e) => setJoin({ ...join, joinSteps: e.target.value })} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label className="text-xs">对报名者的期望（每行一条）</Label>
+            <Textarea rows={3} value={join.joinRequirements} onChange={(e) => setJoin({ ...join, joinRequirements: e.target.value })} />
+          </div>
+          <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
+            <span className="text-xs text-muted-foreground">同时驱动首页招新横幅与「加入我们」页面</span>
+            <Button size="sm" onClick={() => toast.success('已保存（Demo）')}>保存</Button>
+          </div>
+        </div>
+      </TabsContent>
+    </Tabs>
+  )
+}
+
 export function DemoEventDrivenPage() {
   const [step, setStep] = useState<number>(STEP.prepare)
   const [apps, setApps] = useState<MockApp[]>(INITIAL_APPS)
@@ -186,6 +287,8 @@ export function DemoEventDrivenPage() {
   const [threshold, setThreshold] = useState('')
   const [scoreDraft, setScoreDraft] = useState<Record<string, string>>({})
   const [confirming, setConfirming] = useState<{ title: string; body: string; run: () => void } | null>(null)
+  /** 顶层视图：流程（时间线+阶段面板）或 设置 */
+  const [topView, setTopView] = useState<'flow' | 'settings'>('flow')
 
   const currentStage = stepToStage(step)
   /** 时间线上正在看的节点；默认跟随当前阶段 */
@@ -903,6 +1006,28 @@ export function DemoEventDrivenPage() {
 
   return (
     <div className="mx-auto max-w-5xl">
+      {/* ===== 顶层切换：流程 / 设置 ===== */}
+      <div className="mb-5 flex items-center gap-1.5">
+        {([['flow', '流程'], ['settings', '设置']] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setTopView(key)}
+            className={cn(
+              'rounded-full border px-4 py-1.5 text-xs transition-colors',
+              topView === key
+                ? 'border-transparent bg-primary text-primary-foreground'
+                : 'border-border text-foreground/70 hover:bg-secondary',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {topView === 'settings' ? (
+        <SettingsMock />
+      ) : (
+        <>
       {/* ===== 顶部时间线 ===== */}
       <div className="mb-6 overflow-x-auto">
         <div className="flex min-w-max items-stretch gap-1">
@@ -964,6 +1089,8 @@ export function DemoEventDrivenPage() {
       </div>
 
       {stageBody()}
+        </>
+      )}
 
       <AlertDialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
         <AlertDialogContent>

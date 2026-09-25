@@ -225,7 +225,7 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
         <TabsList className="flex h-auto flex-wrap justify-start gap-1">
           <TabsTrigger value="brand">品牌与联系方式</TabsTrigger>
           <TabsTrigger value="about">首页简介</TabsTrigger>
-          {/* 「招新与加入我们」已迁到「招新 → 设置」，与邮件模板放在一起 */}
+          <TabsTrigger value="recruit">招新与加入我们</TabsTrigger>
           <TabsTrigger value="footer">页脚</TabsTrigger>
           <TabsTrigger value="channel">流量通道</TabsTrigger>
           <TabsTrigger value="mail">邮件通知</TabsTrigger>
@@ -319,7 +319,71 @@ export function SettingsPage({ identity }: { identity: AdminIdentity }) {
           <SaveBar>统计数字本身由成员 / 项目 / 新闻数量自动计算，这里只改标签文字</SaveBar>
         </TabsContent>
 
-        {/* 「招新与加入我们」已迁到「招新 → 设置」（RecruitSettingsPage），与邮件模板放在一起 */}
+        {/* ===== 招新与加入我们 ===== */}
+        <TabsContent value="recruit" className="mt-5 rounded-2xl border border-border bg-card p-5 sm:p-6">
+          <div className="grid gap-5">
+            {/* 招新总开关已移除：报名入口与首页横幅由招新周期自动派生（见后台「招新 → 准备」） */}
+            <Field label="首页招新横幅标题">
+              <Input value={site.recruitTitle} onChange={(e) => patch({ recruitTitle: e.target.value })} />
+            </Field>
+
+            <Field label="首页招新横幅描述">
+              <Textarea value={site.recruitDesc} rows={3} onChange={(e) => patch({ recruitDesc: e.target.value })} />
+            </Field>
+
+            <div className="border-t border-border pt-5">
+              <Field label="「加入我们」页面标题">
+                <Input value={site.joinTitle} onChange={(e) => patch({ joinTitle: e.target.value })} />
+              </Field>
+            </div>
+
+            <Field label="「加入我们」页面描述">
+              <Textarea value={site.joinIntro} rows={3} onChange={(e) => patch({ joinIntro: e.target.value })} />
+            </Field>
+
+            <Field
+              label="招新流程"
+              hint={`每行一条，格式「标题 | 描述」，当前 ${preview.steps.length} 条`}
+            >
+              <Textarea
+                value={site.joinSteps}
+                rows={6}
+                onChange={(e) => patch({ joinSteps: e.target.value })}
+                placeholder="扫码完成身份认证 | 使用微信扫描二维码…"
+              />
+            </Field>
+
+            <div className="grid gap-1.5">
+              <Label>流程预览</Label>
+              <div className="rounded-xl border border-border bg-secondary/30 p-4">
+                {preview.steps.map((step) => (
+                  <div key={step.no} className="grid grid-cols-[2.5rem_1fr] gap-3 border-b border-border py-2.5 last:border-b-0">
+                    <span className="font-display text-accent">{step.no}</span>
+                    <div>
+                      <div className="text-sm font-medium">{step.title || '（缺少标题）'}</div>
+                      <div className="text-xs text-muted-foreground">{step.desc || '（无描述）'}</div>
+                    </div>
+                  </div>
+                ))}
+                {preview.steps.length === 0 && (
+                  <p className="text-xs text-muted-foreground">还没有填写流程</p>
+                )}
+              </div>
+            </div>
+
+            <Field
+              label="对报名者的期望"
+              hint={`每行一条，当前 ${preview.requirements.length} 条；留空则不显示该区块`}
+            >
+              <Textarea
+                value={site.joinRequirements}
+                rows={5}
+                onChange={(e) => patch({ joinRequirements: e.target.value })}
+              />
+            </Field>
+          </div>
+          <SaveBar>这里的内容同时驱动首页招新横幅与「加入我们」页面</SaveBar>
+        </TabsContent>
 
         {/* ===== 页脚 ===== */}
         <TabsContent value="footer" className="mt-5 rounded-2xl border border-border bg-card p-5 sm:p-6">

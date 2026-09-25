@@ -13,7 +13,7 @@ import { CyclePage } from './recruit/CyclePage'
 import { ApplicationsPage } from './recruit/ApplicationsPage'
 import { StagePage } from './recruit/StagePage'
 import { DemoEventDrivenPage } from './recruit/DemoEventDrivenPage'
-import { RecruitSettingsPage } from './recruit/RecruitSettingsPage'
+import { TemplatesPage } from './recruit/TemplatesPage'
 import { MailsPage } from './recruit/MailsPage'
 import { StoragePage } from './StoragePage'
 
@@ -76,7 +76,7 @@ export function AdminApp() {
           <Route path="recruit/roster" element={<ApplicationsPage />} />
           {/* ⚠️ 临时 DEMO（事件驱动信息架构，假数据）：确认后删除本行与 DemoEventDrivenPage.tsx */}
           <Route path="recruit/demo" element={<DemoEventDrivenPage />} />
-          <Route path="recruit/settings" element={<RecruitSettingsPage />} />
+          <Route path="recruit/templates" element={<TemplatesPage />} />
           <Route path="recruit/mails" element={<MailsPage />} />
           <Route path="content/:resource" element={<ContentPage />} />
           <Route path="audit" element={<AuditPage />} />
