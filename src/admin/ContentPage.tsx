@@ -43,6 +43,7 @@ import {
   defaultEntity,
   isFieldActive,
   isResourceKey,
+  validateEntity,
   type FieldDef,
   type ResourceDef,
 } from '@shared/resources'
@@ -240,6 +241,15 @@ export function ContentPage() {
           : value
     }
 
+    // 提交前先跑一遍与 Worker 完全相同的校验（同一个 validateEntity）：
+    // 「新增 / 编辑」时所有必填字段（含按 status 切换的负责方向 / 毕业去向）都必须已填写，
+    // 本地先拦一次，免得白跑一趟接口才拿到 400。
+    const invalid = validateEntity(def, payload)
+    if (invalid) {
+      toast.error(invalid)
+      return
+    }
+
     setSaving(true)
     try {
       if (editingId) {
@@ -375,7 +385,11 @@ export function ContentPage() {
                   <div key={field.key} className="grid gap-1.5">
                     <Label>
                       {field.label}
-                      {field.required && <span className="ml-0.5 text-destructive">*</span>}
+                      {/* requiredWhen 的字段只在该条件成立时才渲染（上面已用 isFieldActive 过滤过），
+                          所以这里直接按「有 requiredWhen 即此时必填」标注星号 */}
+                      {(field.required || field.requiredWhen) && (
+                        <span className="ml-0.5 text-destructive">*</span>
+                      )}
                     </Label>
                     <FieldControl
                       field={field}

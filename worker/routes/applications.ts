@@ -187,7 +187,14 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
   let record
   try {
     if (existing && replace) {
-      const updated = await updateApplication(ctx.env, existing.id, docFields)
+      const updated = await updateApplication(ctx.env, existing.id, {
+        ...docFields,
+        // 换了一版材料就**退回待审核**：上一次的「驳回 / 通过」是针对旧文件给的结论。
+        // 不重置的话，同学按驳回理由改好了却仍显示「已驳回」，而理由指向的那版早就不在了。
+        materialStatus: '',
+        materialReason: '',
+        materialReviewedAt: '',
+      })
       if (!updated) throw new Error('替换后读取失败')
       record = updated
     } else {
@@ -217,7 +224,9 @@ export async function submitApplication(ctx: RequestContext): Promise<Response> 
     action: existing && replace ? 'replace_application' : 'apply',
     resource: 'applications',
     targetId: record.id,
-    detail: `${record.name} ${kind.ext} ${(file.size / 1024).toFixed(1)}KB${existing && replace ? '（替换旧材料）' : ''}`,
+    detail: `${record.name} ${kind.ext} ${(file.size / 1024).toFixed(1)}KB${
+      existing && replace ? '（替换旧材料，审核状态重置为待审核）' : ''
+    }`,
     ...requestMeta(ctx),
   })
 
@@ -335,12 +344,15 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
   const email = String(body.email ?? '').trim() || record.email
   const now = new Date()
 
-  // 写入成员表：姓名 / 学号沿用报名时的身份，加入年份取当前年份
+  // 写入成员表：姓名沿用报名时的身份，加入年份取当前年份。
+  // 这里把 members 的**全部字段**都显式给出来（含新成员必然为空的毕业去向），
+  // 保证 INSERT 覆盖整行，不依赖建表 SQL 的 DEFAULT。
   const member = await createEntity(ctx.env, RESOURCES.members, {
     name: record.name,
     nameEn: String(body.nameEn ?? '').trim(),
     title,
     direction: String(body.direction ?? '').trim(),
+    destination: '',
     email,
     joinYear: String(now.getFullYear()),
     status: 'current',

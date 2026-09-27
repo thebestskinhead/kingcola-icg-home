@@ -8,6 +8,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   canMoveStage,
+  MATERIAL_REASON_MAX,
+  MATERIAL_STATUS_LABELS,
   nextStageOf,
   prevStageOf,
   RECRUIT_MAIL_KINDS,
@@ -16,6 +18,7 @@ import {
   RECRUIT_STAGES,
   STAGE_RESULTS,
   type CheckinStage,
+  type MaterialStatus,
   type RecruitMailKind,
   type RecruitResult,
   type RecruitStage,
@@ -71,6 +74,7 @@ import {
   Trash2,
   UserMinus,
   UserX,
+  XCircle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
@@ -106,12 +110,32 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
   const [detailId, setDetailId] = useState<string | null>(null)
   const [notifyOpen, setNotifyOpen] = useState(false)
   const [deleting, setDeleting] = useState<AdminApplication | null>(null)
+  /** 材料审核筛选（只在报名阶段与「待确认笔试名单」期间有意义） */
+  const [material, setMaterial] = useState<'all' | MaterialStatus>('all')
+  /** 驳回对话框：要驳回的那批人（行内进来是 1 个，批量条进来是一批）；null = 关着 */
+  const [rejecting, setRejecting] = useState<string[] | null>(null)
+
+  /** 材料审核只在报名阶段可用（后端同样会拒），其余阶段不显示这些入口 */
+  const reviewable = admin.state === 'apply' || admin.state === 'apply_review'
 
   const stageList = useMemo(() => admin.apps.filter((app) => app.stage === stage), [admin.apps, stage])
   const filtered = useMemo(
-    () => stageList.filter((app) => (result === 'all' || app.result === result) && matches(app, query)),
-    [stageList, result, query],
+    () =>
+      stageList.filter(
+        (app) =>
+          (result === 'all' || app.result === result) &&
+          (!reviewable || material === 'all' || app.materialStatus === material) &&
+          matches(app, query),
+      ),
+    [stageList, result, material, reviewable, query],
   )
+
+  /** 审核状态各自多少人（筛选条上的计数） */
+  const materialCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: stageList.length }
+    for (const app of stageList) counts[app.materialStatus] = (counts[app.materialStatus] ?? 0) + 1
+    return counts
+  }, [stageList])
   const detail = detailId ? (admin.apps.find((app) => app.id === detailId) ?? null) : null
   const allChecked = filtered.length > 0 && filtered.every((app) => selected.has(app.id))
   const checkinStage = examFieldOf(stage)
@@ -133,6 +157,19 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
     })
 
   const selectedIds = [...selected]
+
+  /** 通过材料（单个也走批量接口：同一条规则、同一句 toast） */
+  const approveMaterial = async (ids: string[]) => {
+    if (await admin.bulk(ids, 'approve_material')) setSelected(new Set())
+  }
+
+  /** 驳回材料：理由必填（会逐人发信，见 RejectDialog 的说明） */
+  const rejectMaterial = async (reason: string) => {
+    const ids = rejecting
+    setRejecting(null)
+    if (!ids) return
+    if (await admin.bulk(ids, 'reject_material', { materialReason: reason })) setSelected(new Set())
+  }
 
   return (
     <div className="space-y-5">
@@ -217,19 +254,61 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
             )
           })}
         </div>
+
+        {/* 材料审核筛选：报名阶段的主线任务就是把这些「待审核」清空 */}
+        {reviewable && (
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
+            <span className="mr-1 text-[11px] text-muted-foreground">材料审核</span>
+            {(['all', 'approved', 'rejected', ''] as const).map((item) => (
+              <button
+                key={item || 'pending'}
+                onClick={() => setMaterial(item)}
+                className={cn(
+                  'rounded-full px-3 py-1 text-xs transition-colors',
+                  material === item ? 'bg-accent/15 text-accent' : 'text-muted-foreground hover:bg-secondary',
+                )}
+              >
+                {item === 'all' ? '全部' : MATERIAL_STATUS_LABELS[item]} {materialCounts[item] ?? 0}
+              </button>
+            ))}
+            <span className="ml-2 text-[11px] text-muted-foreground">
+              只有「材料已通过」的人才能被勾选进笔试名单
+            </span>
+          </div>
+        )}
       </div>
 
       {/* 批量操作条 */}
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-accent/40 bg-accent/5 px-4 py-2.5 text-xs">
           <span className="font-medium">已勾选 {selected.size} 人</span>
+          {reviewable && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1"
+                onClick={() => void approveMaterial(selectedIds)}
+              >
+                <Check className="h-3.5 w-3.5" /> 通过材料
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1 text-destructive"
+                onClick={() => setRejecting(selectedIds)}
+              >
+                <XCircle className="h-3.5 w-3.5" /> 驳回材料…
+              </Button>
+            </>
+          )}
           {checkinStage && (
             <Button
               size="sm"
               variant="outline"
               className="gap-1"
               onClick={async () => {
-                if (await admin.bulk(selectedIds, 'checkin', checkinStage)) setSelected(new Set())
+                if (await admin.bulk(selectedIds, 'checkin', { stage: checkinStage })) setSelected(new Set())
               }}
             >
               <Check className="h-3.5 w-3.5" /> 标记已签到
@@ -283,8 +362,9 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
               <TableHead>联系方式</TableHead>
               {checkinStage && <TableHead className="w-24">成绩</TableHead>}
               {checkinStage && <TableHead className="w-24">签到</TableHead>}
+              {reviewable && <TableHead className="w-24">材料</TableHead>}
               <TableHead className="w-28">当前状态</TableHead>
-              <TableHead className="w-40" />
+              <TableHead className="w-56" />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -331,9 +411,34 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
                     )}
                   </TableCell>
                 )}
+                {reviewable && (
+                  <TableCell>
+                    <MaterialBadge status={app.materialStatus} />
+                  </TableCell>
+                )}
                 <TableCell className="text-xs">{app.statusLabel}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-1">
+                    {reviewable && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 gap-1 text-xs"
+                          onClick={() => void approveMaterial([app.id])}
+                        >
+                          <Check className="h-3.5 w-3.5" /> 通过
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 gap-1 text-xs text-destructive"
+                          onClick={() => setRejecting([app.id])}
+                        >
+                          <XCircle className="h-3.5 w-3.5" /> 驳回
+                        </Button>
+                      </>
+                    )}
                     <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setDetailId(app.id)}>
                       详情 · 改资料
                     </Button>
@@ -362,7 +467,10 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
             ))}
             {filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell
+                  colSpan={5 + (checkinStage ? 2 : 0) + (reviewable ? 1 : 0)}
+                  className="py-10 text-center text-sm text-muted-foreground"
+                >
                   {admin.loading ? '正在加载…' : '没有符合条件的记录'}
                 </TableCell>
               </TableRow>
@@ -392,6 +500,14 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
         }}
       />
 
+      {rejecting && (
+        <RejectDialog
+          count={rejecting.length}
+          onClose={() => setRejecting(null)}
+          onConfirm={(reason) => void rejectMaterial(reason)}
+        />
+      )}
+
       <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -415,6 +531,79 @@ export function RecruitRosterView({ admin }: { admin: RecruitAdmin }) {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  )
+}
+
+/** 材料审核状态的徽标：三种状态一眼分清（灰 / 绿 / 红） */
+function MaterialBadge({ status }: { status: MaterialStatus }) {
+  const tone =
+    status === 'approved'
+      ? 'bg-emerald-500/10 text-emerald-700'
+      : status === 'rejected'
+        ? 'bg-destructive/10 text-destructive'
+        : 'bg-secondary text-muted-foreground'
+  return (
+    <span className={cn('whitespace-nowrap rounded-full px-2 py-0.5 text-[11px]', tone)}>
+      {MATERIAL_STATUS_LABELS[status]}
+    </span>
+  )
+}
+
+/**
+ * 驳回理由对话框。
+ *
+ * 理由**不能用默认值糊过去**：它会被写进发给同学的那封「材料驳回通知」，
+ * 是对方改材料的唯一依据 —— 所以按钮上直接写「驳回并发出通知」，让人知道自己按下去会发生什么。
+ */
+function RejectDialog({
+  count,
+  onClose,
+  onConfirm,
+}: {
+  count: number
+  onClose: () => void
+  onConfirm: (reason: string) => void
+}) {
+  const [reason, setReason] = useState('')
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>驳回 {count} 人的材料</DialogTitle>
+          <DialogDescription>
+            理由会逐人写进「材料驳回通知」邮件里，是同学修改材料的唯一依据 —— 写具体一点，
+            比如「报名表缺成绩单页」「附件打不开」「手机号少一位」。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-1.5">
+          <Label className="text-xs">驳回理由 *</Label>
+          <Textarea
+            rows={4}
+            value={reason}
+            maxLength={MATERIAL_REASON_MAX}
+            placeholder="例：报名表里没有成绩单页，请补齐后重新上传。"
+            onChange={(event) => setReason(event.target.value)}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            同学重新上传材料后，审核状态会回到「待审核」，你可以再看一遍（在此之前他不能进笔试名单）。
+          </p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            variant="destructive"
+            className="gap-1.5"
+            disabled={!reason.trim()}
+            onClick={() => onConfirm(reason.trim())}
+          >
+            <XCircle className="h-4 w-4" /> 驳回并发出通知
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -517,7 +706,11 @@ function AppDetailDialog({
   const [mailKind, setMailKind] = useState<RecruitMailKind | ''>('')
   const [mails, setMails] = useState<MailLogRow[]>([])
   const [saving, setSaving] = useState(false)
+  /** 详情里的驳回理由草稿（与列表页的驳回对话框同一套规则：必填） */
+  const [rejectReason, setRejectReason] = useState('')
 
+  /** 材料审核只在报名阶段与「待确认笔试名单」期间可用（后端同样会拒） */
+  const reviewable = admin.state === 'apply' || admin.state === 'apply_review'
   const checkinStage = examFieldOf(app.stage)
   const prev = prevStageOf(app.stage)
   const next = nextStageOf(app.stage)
@@ -567,6 +760,58 @@ function AppDetailDialog({
         </DialogHeader>
 
         <div className="space-y-5">
+          {/* 材料审核：报名阶段最常做的事，所以放在最上面 */}
+          {reviewable && (
+            <section className="rounded-lg border border-border px-4 py-3">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground">材料审核</h3>
+                <MaterialBadge status={app.materialStatus} />
+                <span className="text-[11px] text-muted-foreground">
+                  只有「材料已通过」的人能被勾选进笔试名单
+                </span>
+              </div>
+              {app.materialStatus === 'rejected' && app.materialReason && (
+                <p className="mb-2 rounded-md bg-destructive/5 px-3 py-2 text-xs leading-relaxed text-destructive">
+                  已驳回：{app.materialReason}
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" className="gap-1" onClick={() => void admin.reviewMaterial(app, 'approved')}>
+                  <Check className="h-3.5 w-3.5" /> 通过材料
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1 text-destructive"
+                  disabled={!rejectReason.trim()}
+                  onClick={() => void admin.reviewMaterial(app, 'rejected', rejectReason)}
+                >
+                  <XCircle className="h-3.5 w-3.5" /> 驳回并发出通知
+                </Button>
+                {app.materialStatus !== '' && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-xs"
+                    onClick={() => void admin.reviewMaterial(app, '')}
+                  >
+                    退回待审核
+                  </Button>
+                )}
+              </div>
+              <div className="mt-2 grid gap-1.5">
+                <Label className="text-xs">驳回理由（会发进邮件，同学照着它改）</Label>
+                <Textarea
+                  rows={2}
+                  value={rejectReason}
+                  maxLength={MATERIAL_REASON_MAX}
+                  placeholder="例：报名表缺成绩单页，请补齐后重新上传。"
+                  onChange={(event) => setRejectReason(event.target.value)}
+                />
+              </div>
+            </section>
+          )}
+
           {/* 状态与流转 */}
           <section className="rounded-lg border border-border px-4 py-3">
             <h3 className="mb-2 text-xs font-semibold text-muted-foreground">状态与流转</h3>

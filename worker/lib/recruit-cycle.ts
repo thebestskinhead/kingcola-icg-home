@@ -19,6 +19,7 @@ import {
   applicationInviteExpiry,
   applicationLabel,
   buildCsv,
+  isMaterialApproved,
   RECRUIT_ACTION_META,
   RECRUIT_ARCHIVE_SCOPE,
   RECRUIT_STAGE_LABELS,
@@ -269,6 +270,27 @@ async function promote(
   )
   const winners = eligible.filter((record) => picked.has(record.id))
   const losers = eligible.filter((record) => !picked.has(record.id))
+
+  // 「报名 → 笔试」这一步额外看材料审核：**没通过的人不能进笔试** ——
+  // 否则管理员辛苦审一轮，勾选时照样能把被驳回的人送进考场，审核就成了装饰。
+  //
+  // 只在这一步校验：材料审核是报名阶段的事，过了笔试再拿它卡人没有意义
+  // （现场补录到笔试的人也不该因为「没有报名材料」而被拦在面试之外）。
+  // 也只拦**勾选的**人：未勾选的本来就会判未通过，不必因为他堵住整个动作。
+  if (plan.stage === 'apply') {
+    const pending = winners.filter((record) => !isMaterialApproved(record))
+    if (pending.length > 0) {
+      const names = pending
+        .slice(0, 5)
+        .map((record) => `${record.name}(${record.studentId})`)
+        .join('、')
+      throw new RecruitActionError(
+        'MATERIAL_NOT_APPROVED',
+        `勾选的人里有 ${pending.length} 人的材料还没通过审核：${names}${pending.length > 5 ? ' 等' : ''}。` +
+          '请先在名单里把他们「通过材料」，或者取消勾选。',
+      )
+    }
+  }
 
   if (winners.length === 0) {
     throw new RecruitActionError('NOTHING_TO_PROMOTE', '勾选的人里没有可以推进的记录（可能已经结束或不在本阶段）')

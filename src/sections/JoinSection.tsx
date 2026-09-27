@@ -138,6 +138,14 @@ export function JoinSection({ site }: { site: SiteConfig }) {
     void refreshIdentity()
   }, [refreshIdentity])
 
+  // 已经报过名的同学：把联系方式预填上 —— 被驳回要重传时尤其省事，不用照着邮件重敲一遍
+  useEffect(() => {
+    if (!application) return
+    setEmail((prev) => prev || application.email)
+    setPhone((prev) => prev || application.phone)
+    setQq((prev) => prev || application.qq)
+  }, [application])
+
   const signIn = () => {
     // 整页跳转：授权流程跨域，必须交给浏览器，不能用 fetch
     window.location.href = STUDENT_LOGIN_URL
@@ -185,7 +193,7 @@ export function JoinSection({ site }: { site: SiteConfig }) {
    */
   const [replaceConfirmed, setReplaceConfirmed] = useState(false)
 
-  const submit = async () => {
+  const submit = async (forceReplace = false) => {
     if (!file) return toast.error('请先选择报名表文件')
     const invalid = validateApplicationForm({ email, phone, qq })
     if (invalid) return toast.error(invalid)
@@ -195,11 +203,12 @@ export function JoinSection({ site }: { site: SiteConfig }) {
     form.append('email', email.trim())
     form.append('phone', phone.trim())
     form.append('qq', qq.trim())
-    if (replaceConfirmed) form.append('replace', 'true')
 
     setSubmitting(true)
     try {
-      const created = await submitApplication(form, replaceConfirmed)
+      // forceReplace：「材料被驳回后重新提交」这条路径，点下去就是替换 ——
+      // 意图已经够明确，不必再让他确认一次「会覆盖原来那份」（旧文件仍由后端删除）
+      const created = await submitApplication(form, replaceConfirmed || forceReplace)
       setApplication(created)
       setInviteUrl('')
       setFile(null)
@@ -227,7 +236,15 @@ export function JoinSection({ site }: { site: SiteConfig }) {
   // ===== 报名通道是否开放：完全由后台的「开启报名 / 结束报名」决定 =====
   const applyOpen = cycle?.applyOpen ?? false
   const gate = cycle?.gate ?? 'not_open'
-  const hasApplication = Boolean(application)
+
+  /**
+   * 「此刻该改材料」：材料被驳回、报名通道还开着，且他自己没选择先看进度。
+   *
+   * 这时直接把提交表单摆出来 —— 这才是他该做的事，而不是把入口藏在进度页里让人找。
+   * 想看进度点一下就能切回去（`showProgress`），两边都不耽误。
+   */
+  const [showProgress, setShowProgress] = useState(false)
+  const reupload = Boolean(application && applyOpen && application.materialStatus === 'rejected' && !showProgress)
 
   /** 右侧面板的「不能报名」形态：还没开 / 已截止 */
   const closedNotice = (() => {
@@ -291,12 +308,7 @@ export function JoinSection({ site }: { site: SiteConfig }) {
 
         {/* ===== 右：登录 / 提交 / 进度 ===== */}
         <div className="border border-border bg-card p-6 sm:p-8">
-          {!applyOpen && !hasApplication ? (
-            <div className="flex flex-col items-center py-16 text-center">
-              <h3 className="font-display text-2xl font-bold">{closedNotice.title}</h3>
-              <p className="mt-2 max-w-sm text-sm text-muted-foreground">{closedNotice.desc}</p>
-            </div>
-          ) : auth === 'checking' || (auth === 'authenticated' && appLoading) ? (
+          {auth === 'checking' || (auth === 'authenticated' && appLoading) ? (
             <div className="flex flex-col items-center py-16">
               <span className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
               <p className="mt-3 text-sm text-muted-foreground">
@@ -312,20 +324,27 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 </p>
               </div>
             ) : (
+              // 登录按钮在**两种情况下都要有**：报名开着是「来报名」，
+              // 报名关了就是「已经报过名的回来看进度」—— 后者过去没有入口，同学只能干看着。
               <div className="flex flex-col items-center py-10 text-center">
-                <h3 className="font-display text-2xl font-bold">提交你的报名表</h3>
+                <h3 className="font-display text-2xl font-bold">
+                  {applyOpen ? '提交你的报名表' : closedNotice.title}
+                </h3>
                 <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
-                  提交前需通过学校教务网完成身份认证。登录状态保留 30 天，期间无需重复验证。
+                  {applyOpen
+                    ? '提交前需通过学校教务网完成身份认证。登录状态保留 30 天，期间无需重复验证。'
+                    : '本次报名通道已经关闭，不能再提交新的报名表。已经报过名的同学登录后可以继续查看自己的进度 —— 材料审核结果与后续安排都在那里。'}
                 </p>
                 <Button className="mt-6 gap-2" onClick={signIn}>
-                  <QrCode className="h-4 w-4" /> 使用教务网账号登录
+                  <QrCode className="h-4 w-4" />
+                  {applyOpen ? '使用教务网账号登录' : '扫码登录，查看我的进度'}
                 </Button>
                 <p className="mt-3 text-xs text-muted-foreground">
                   将跳转到教务网认证页面，用微信扫码并在手机上确认后自动返回本页
                 </p>
               </div>
             )
-          ) : application ? (
+          ) : application && !reupload ? (
             <>
               <ApplicationProgress
                 application={application}
@@ -333,6 +352,15 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 group={group.number}
                 inviteUrl={inviteUrl}
               />
+              {/* 材料被驳回时：进度照看，同时给一条直通「改材料」的路 */}
+              {applyOpen && application.materialStatus === 'rejected' && (
+                <div className="mt-6 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-xs leading-relaxed">
+                  <p className="text-destructive">材料被驳回：{application.materialReason || '（未填写理由）'}</p>
+                  <Button size="sm" className="mt-3" onClick={() => setShowProgress(false)}>
+                    去修改材料
+                  </Button>
+                </div>
+              )}
               <div className="mt-5 flex items-center justify-between border-t border-border pt-4 text-xs text-muted-foreground">
                 <span>
                   {identity?.name || '已登录'} {identity?.studentId}
@@ -342,10 +370,18 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 </button>
               </div>
             </>
+          ) : !applyOpen ? (
+            /* 已登录、但名下没有报名记录，且通道已经关闭 */
+            <div className="flex flex-col items-center py-16 text-center">
+              <h3 className="font-display text-2xl font-bold">{closedNotice.title}</h3>
+              <p className="mt-2 max-w-sm text-sm text-muted-foreground">{closedNotice.desc}</p>
+            </div>
           ) : (
             <>
               <div className="flex items-center justify-between">
-                <h2 className="font-display text-2xl font-bold">提交你的报名表</h2>
+                <h2 className="font-display text-2xl font-bold">
+                  {reupload ? '按驳回理由重新提交材料' : '提交你的报名表'}
+                </h2>
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs text-emerald-700">
                   <CheckCircle2 className="h-3.5 w-3.5" /> 已登录
                 </span>
@@ -368,6 +404,24 @@ export function JoinSection({ site }: { site: SiteConfig }) {
               <p className="mt-2 text-xs text-muted-foreground">
                 身份信息由学校教务网提供，不可手动修改 · {APPLICATION_DOC_HINT}
               </p>
+
+              {reupload && application && (
+                <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-xs leading-relaxed">
+                  <p className="text-destructive">
+                    材料被驳回：{application.materialReason || '（管理员没有填写理由）'}
+                  </p>
+                  <p className="mt-1 text-muted-foreground">
+                    按上面的说明改好后重新选择文件提交即可；提交后审核状态会回到「待审核」，
+                    我们会再看一遍。
+                  </p>
+                  <button
+                    onClick={() => setShowProgress(true)}
+                    className="mt-2 text-muted-foreground underline hover:text-accent"
+                  >
+                    先看看我的进度
+                  </button>
+                </div>
+              )}
 
               <label
                 onDragOver={(e) => {
@@ -450,11 +504,23 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                 </div>
               )}
 
-              <Button onClick={() => void submit()} className="mt-6 w-full" disabled={!file || submitting}>
-                {submitting ? '正在上传…' : replaceConfirmed ? '确认替换报名表' : '上传并提交'}
+              <Button
+                onClick={() => void submit(reupload)}
+                className="mt-6 w-full"
+                disabled={!file || submitting}
+              >
+                {submitting
+                  ? '正在上传…'
+                  : reupload
+                    ? '重新上传并提交'
+                    : replaceConfirmed
+                      ? '确认替换报名表'
+                      : '上传并提交'}
               </Button>
               <p className="mt-3 text-xs text-muted-foreground">
-                提交后可在本页随时查看进度；一位同学只保留一条报名记录，重复提交会替换材料。
+                {reupload
+                  ? '提交后会替换掉现在这份材料（旧文件会被删除），并重新进入审核。'
+                  : '提交后可在本页随时查看进度；一位同学只保留一条报名记录，重复提交会替换材料。'}
               </p>
             </>
           )}

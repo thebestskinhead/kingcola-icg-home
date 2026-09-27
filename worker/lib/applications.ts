@@ -61,6 +61,10 @@ const COLUMNS: ReadonlyArray<readonly [keyof ApplicationRecord, string]> = [
   ['invitedAt', 'invited_at'],
   ['confirmedAt', 'confirmed_at'],
   ['memberId', 'member_id'],
+  // 材料审核（报名阶段后台逐个通过 / 驳回；同学重传后重置为待审核）
+  ['materialStatus', 'material_status'],
+  ['materialReason', 'material_reason'],
+  ['materialReviewedAt', 'material_reviewed_at'],
   ['note', 'note'],
   ['createdAt', 'created_at'],
   ['updatedAt', 'updated_at'],

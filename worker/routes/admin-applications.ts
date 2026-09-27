@@ -26,12 +26,17 @@ import {
   APPLICATION_PHONE_PATTERN,
   APPLICATION_QQ_PATTERN,
   canMoveStage,
+  isMaterialStatus,
   isRecruitResult,
   isRecruitStage,
   isValidStageResult,
+  MATERIAL_REASON_MAX,
+  MATERIAL_STATUS_LABELS,
   renderTemplate,
   RECRUIT_STAGE_LABELS,
+  RECRUIT_STATE_LABELS,
   type CheckinStage,
+  type MaterialStatus,
   type RecruitMailKind,
   type RecruitResult,
   type RecruitStage,
@@ -161,6 +166,37 @@ interface UpdateApplicationBody {
   email?: string
   phone?: string
   qq?: string
+  /** 材料审核：approved 通过 / rejected 驳回 / '' 退回待审核 */
+  material?: string
+  /** 驳回理由：**必填**（会写进给同学的邮件，就是让他照着改的） */
+  materialReason?: string
+}
+
+/**
+ * 材料审核的公共前置：只在报名阶段与「待确认笔试名单」期间可用。
+ *
+ * 审核的意义就是决定谁能进笔试 —— 笔试都开考了再来改审核状态只会让人困惑。
+ */
+async function materialReviewGate(ctx: RequestContext): Promise<Response | null> {
+  const { cycle } = await getRecruitSettings(ctx.env)
+  if (cycle.state === 'apply' || cycle.state === 'apply_review') return null
+  return fail(
+    409,
+    'STAGE_NOT_APPLICABLE',
+    `当前是「${RECRUIT_STATE_LABELS[cycle.state]}」，材料审核只在报名阶段与「待确认笔试名单」期间可用`,
+  )
+}
+
+/** 驳回理由的公共校验（单人与批量共用同一套话术） */
+function validateRejectReason(raw: unknown): { reason: string } | Response {
+  const reason = String(raw ?? '').trim()
+  if (!reason) {
+    return fail(400, 'REASON_REQUIRED', '驳回要写清理由 —— 这封邮件就是让同学照着改的')
+  }
+  if (reason.length > MATERIAL_REASON_MAX) {
+    return fail(400, 'VALIDATION_FAILED', `驳回理由请控制在 ${MATERIAL_REASON_MAX} 字以内`)
+  }
+  return { reason }
 }
 
 export async function updateApplicationAdmin(ctx: RequestContext): Promise<Response> {
@@ -265,6 +301,29 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
     }
   }
 
+  // ---- 材料审核（报名阶段后台逐个通过 / 驳回） ----
+  //
+  // 用 `!== undefined` 判断「这次请求是否在改审核状态」：
+  // 空串是**合法取值**（退回待审核），不能当成「没传」。
+  const materialRaw = String(body.material ?? '').trim()
+  let rejectReason = ''
+  if (body.material !== undefined) {
+    if (!isMaterialStatus(materialRaw)) {
+      return fail(400, 'INVALID_MATERIAL_STATUS', `未知的审核状态：${materialRaw}`)
+    }
+    const gate = await materialReviewGate(ctx)
+    if (gate) return gate
+    if (materialRaw === 'rejected') {
+      const checked = validateRejectReason(body.materialReason)
+      if (checked instanceof Response) return checked
+      rejectReason = checked.reason
+    }
+    patch.materialStatus = materialRaw
+    // 通过时顺手清掉上一次的驳回理由，免得名单里留着一句对不上的旧话
+    patch.materialReason = materialRaw === 'rejected' ? rejectReason : ''
+    patch.materialReviewedAt = nowIso
+  }
+
   // ---- 格式校验：联系方式的格式任何时候都不该垮掉；留空仍然允许（信息可以后补） ----
   if (patch.email && !APPLICATION_EMAIL_PATTERN.test(patch.email)) {
     return fail(400, 'VALIDATION_FAILED', '邮箱格式不正确')
@@ -300,6 +359,22 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
 
   // ---- 邮件 ----
   let mail = null as Awaited<ReturnType<typeof sendApplicationNotice>> | null
+  const materialChanged = patch.materialStatus !== undefined
+
+  // 驳回**自动**发信：理由都填好了，再让管理员去点一次「补发」纯属多余。
+  // 通过则不发（他没做错什么，不必打扰）—— 这与「缺考不发信」是同一条取向。
+  if (updated.materialStatus === 'rejected' && rejectReason) {
+    const runtime = await resolveRuntimeConfig(ctx)
+    mail = await sendApplicationNotice(
+      ctx.env,
+      runtime.mail,
+      updated,
+      'material_rejected',
+      await noticeContext(ctx),
+      actorOf(ctx),
+    )
+  }
+
   const noticeRaw = (body.notice ?? '').trim()
   if (noticeRaw && isNoticeKind(noticeRaw)) {
     const runtime = await resolveRuntimeConfig(ctx)
@@ -320,14 +395,23 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
 
   await writeAudit(ctx.env, {
     actor: actorOf(ctx),
-    action: statusChanged ? 'advance_application' : profileChanged ? 'update_profile' : 'update_application',
+    action: statusChanged
+      ? 'advance_application'
+      : materialChanged
+        ? 'review_material'
+        : profileChanged
+          ? 'update_profile'
+          : 'update_application',
     resource: 'applications',
     targetId: record.id,
     detail: [
       `${record.name}(${record.studentId})`,
       statusChanged
         ? `${applicationLabel(record.stage, record.result)} → ${applicationLabel(nextStage, nextResult)}`
-        : '字段更新',
+        : materialChanged
+          ? `材料审核 → ${MATERIAL_STATUS_LABELS[updated.materialStatus]}`
+          : '字段更新',
+      rejectReason ? `理由：${rejectReason}` : '',
       profileChanged && `${updated.name}(${updated.studentId}) 资料已改`,
       mail ? `mail=${mail.code}` : '',
     ]
@@ -497,10 +581,12 @@ export async function createApplicationAdmin(ctx: RequestContext): Promise<Respo
 
 interface BulkBody {
   ids?: string[]
-  /** checkin 勾签到 / absent 标记未参加 / withdraw 退出报名 */
+  /** checkin 勾签到 / absent 标记未参加 / withdraw 退出报名 / approve_material 通过材料 / reject_material 驳回材料 */
   action?: string
   /** checkin 需要指定阶段 */
   stage?: string
+  /** reject_material 需要理由（会写进每个人的驳回邮件） */
+  materialReason?: string
 }
 
 export async function bulkApplicationsAdmin(ctx: RequestContext): Promise<Response> {
@@ -543,22 +629,70 @@ export async function bulkApplicationsAdmin(ctx: RequestContext): Promise<Respon
       }
       break
     }
+    case 'approve_material':
+    case 'reject_material': {
+      const gate = await materialReviewGate(ctx)
+      if (gate) return gate
+      const status: MaterialStatus = action === 'approve_material' ? 'approved' : 'rejected'
+      let reason = ''
+      if (status === 'rejected') {
+        const checked = validateRejectReason(body.materialReason)
+        if (checked instanceof Response) return checked
+        reason = checked.reason
+      }
+      for (const id of ids) {
+        updates.push({
+          id,
+          materialStatus: status,
+          materialReason: status === 'rejected' ? reason : '',
+          materialReviewedAt: nowIso,
+        })
+      }
+      break
+    }
     default:
       return fail(400, 'INVALID_ACTION', `未知的批量操作：${action}`)
   }
 
   const moved = await updateApplications(ctx.env, updates)
 
+  // 批量驳回要**逐人**发信：理由相同，但每个人收到的是一封写着自己名字的信。
+  // 批量通过则不发（与单人一致：通过不打扰）。
+  let mail: { sent: number; failed: number; summary: string } | null = null
+  if (action === 'reject_material' && updates.length > 0) {
+    const [runtime, context] = await Promise.all([resolveRuntimeConfig(ctx), noticeContext(ctx)])
+    const sends: SendNoticeResult[] = []
+    for (const update of updates) {
+      const record = await getApplication(ctx.env, update.id)
+      if (record) {
+        sends.push(
+          await sendApplicationNotice(ctx.env, runtime.mail, record, 'material_rejected', context, actorOf(ctx)),
+        )
+      }
+    }
+    mail = {
+      sent: sends.filter((item) => item.sent).length,
+      failed: sends.filter((item) => !item.sent).length,
+      summary: summarizeMailResults(sends),
+    }
+  }
+
   await writeAudit(ctx.env, {
     actor: actorOf(ctx),
     action: `bulk_${action}`,
     resource: 'applications',
     targetId: action,
-    detail: `勾选 ${ids.length} 条，实际改动 ${moved} 条`,
+    detail: [
+      `勾选 ${ids.length} 条，实际改动 ${moved} 条`,
+      action === 'reject_material' ? `驳回理由：${(body.materialReason ?? '').trim()}` : '',
+      mail ? mail.summary : '',
+    ]
+      .filter(Boolean)
+      .join(' · '),
     ...requestMeta(ctx),
   })
 
-  return ok({ moved })
+  return ok({ moved, mail })
 }
 
 // ===== 批量通知信 =====
@@ -732,6 +866,10 @@ export async function uploadApplicationDocAdmin(ctx: RequestContext): Promise<Re
       fileUrl: storage.objectUrl(key),
       fileName: applicationDocFileName(record.name, record.studentId, kind.ext),
       fileSize: file.size,
+      // 后台换了一版材料同样要重新审核（旧结论是针对旧文件给的）
+      materialStatus: '',
+      materialReason: '',
+      materialReviewedAt: '',
     })
   } catch (error) {
     // 落库失败就把刚传上去的删掉，别在桶里留孤儿对象

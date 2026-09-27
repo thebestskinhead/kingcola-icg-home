@@ -24,6 +24,7 @@ import {
   RECRUIT_ACTION_META,
   RECRUIT_STATE_LABELS,
   type CheckinStage,
+  type MaterialStatus,
   type RecruitAction,
   type RecruitCheckinCodeMap,
   type RecruitCycleConfig,
@@ -192,7 +193,7 @@ export function useRecruitAdmin() {
     [],
   )
 
-  /** 保存邮件模板（七条一起交，避免半套模板落在库里） */
+  /** 保存邮件模板（八条一起交，避免半套模板落在库里） */
   const saveTemplates = useCallback(
     async (next: RecruitTemplates) => {
       try {
@@ -294,11 +295,64 @@ export function useRecruitAdmin() {
     [load],
   )
 
-  const bulk = useCallback(
-    async (ids: string[], action: 'checkin' | 'absent' | 'withdraw', stage?: CheckinStage) => {
+  /**
+   * 单人材料审核。
+   *
+   * **驳回会自动发出一封「材料驳回通知」**（理由就是他改材料的依据），
+   * 所以这里要把发信结果如实说出来 —— 管理员得知道信到底出去没有。
+   */
+  const reviewMaterial = useCallback(
+    async (app: AdminApplication, status: MaterialStatus, reason = '') => {
       try {
-        const result = await adminBulkApplications({ ids, action, stage })
+        const result = await adminUpdateApplication(app.id, {
+          material: status,
+          materialReason: status === 'rejected' ? reason : undefined,
+        })
         await load()
+        if (status === 'rejected') {
+          const mail = result.mail
+          toast.success(`已驳回 ${app.name} 的材料`, {
+            description: mail
+              ? mail.sent
+                ? `驳回通知已发到 ${mail.to}`
+                : `驳回通知没发出去：${mail.message}（可在名单里补发）`
+              : '信没有发出（模板被停用或本人没有邮箱）',
+          })
+        } else {
+          toast.success(`已通过 ${app.name} 的材料`, {
+            description: '他现在可以被勾选进笔试名单了。',
+          })
+        }
+        return true
+      } catch (err) {
+        toast.error(describeError(err, '审核失败'))
+        return false
+      }
+    },
+    [load],
+  )
+
+  const bulk = useCallback(
+    async (
+      ids: string[],
+      action: 'checkin' | 'absent' | 'withdraw' | 'approve_material' | 'reject_material',
+      options: { stage?: CheckinStage; materialReason?: string } = {},
+    ) => {
+      try {
+        const result = await adminBulkApplications({ ids, action, ...options })
+        await load()
+        if (action === 'approve_material') {
+          toast.success(`已通过 ${result.moved} 人的材料`, {
+            description: '只有通过审核的人才能被勾选进笔试名单。',
+          })
+          return true
+        }
+        if (action === 'reject_material') {
+          toast.success(`已驳回 ${result.moved} 人的材料`, {
+            description: `驳回通知：${result.mail?.summary || '没有发出（请检查邮件通道或模板开关）'}`,
+          })
+          return true
+        }
         const label = action === 'checkin' ? '标记已签到' : action === 'absent' ? '标记未参加' : '退出报名'
         toast.success(`已${label} ${result.moved} 人`, {
           description: action === 'checkin' ? '人确实来过，缺考标记会一并撤销。' : '不发信。',
@@ -382,6 +436,7 @@ export function useRecruitAdmin() {
     revokeCode,
     updateApp,
     uploadDoc,
+    reviewMaterial,
     deleteApp,
     bulk,
     notify,

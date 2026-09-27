@@ -185,7 +185,7 @@ export function RecruitPage() {
             </Button>
           </div>
           <p className="mx-auto mt-6 max-w-md text-xs leading-relaxed text-muted-foreground">
-            「设置」里是跨届通用的东西（七封邮件模板、官网招新文案），休眠期就能先备好；
+            「设置」里是跨届通用的东西（八封邮件模板、官网招新文案），休眠期就能先备好；
             本届的名称与四个 QQ 群号属于流程，点「启动系统」后在流程页里填。
           </p>
         </div>
@@ -322,6 +322,31 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
   )
 
   /**
+   * 材料审核的进度条。
+   *
+   * 审核是「确认笔试名单」的前置（未通过的人进不了笔试），所以报名与「待确认名单」
+   * 两块面板都要看得见 —— 不然管理员点确认时才会发现被拦，还得回头找人。
+   */
+  const materialBar = () => {
+    const list = admin.apps.filter((app) => app.stage === 'apply')
+    const pending = list.filter((app) => app.materialStatus === '').length
+    const approved = list.filter((app) => app.materialStatus === 'approved').length
+    const rejected = list.filter((app) => app.materialStatus === 'rejected').length
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-secondary/50 px-3 py-2 text-xs">
+        <span className="font-medium">材料审核</span>
+        <span className={pending > 0 ? 'text-amber-700' : 'text-muted-foreground'}>待审核 {pending}</span>
+        <span className="text-emerald-700">已通过 {approved}</span>
+        <span className={rejected > 0 ? 'text-destructive' : 'text-muted-foreground'}>已驳回 {rejected}</span>
+        <span className="text-muted-foreground">
+          在「名单」里逐个「通过 / 驳回」：驳回会发信让同学按理由改材料，改完自动回到待审核。
+          <strong className="font-medium">没通过审核的人不能被勾选进笔试。</strong>
+        </span>
+      </div>
+    )
+  }
+
+  /**
    * 「强制结束报名并清空数据」的确认文案：把此刻真要删掉的东西点清楚。
    * 这类动作最怕的是「以为只是关个开关」，所以宁可用数字说得啰嗦一点。
    */
@@ -451,7 +476,7 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
                         size="sm"
                         variant="outline"
                         className="h-7 gap-1 text-xs"
-                        onClick={() => void admin.bulk([app.id], 'checkin', field)}
+                        onClick={() => void admin.bulk([app.id], 'checkin', { stage: field })}
                       >
                         <Check className="h-3 w-3" /> {app.result === 'absent' ? '补签（撤销缺考）' : '补签'}
                       </Button>
@@ -551,8 +576,9 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
           <div className="space-y-4">
             {panel(
               '收报名表',
-              '同学自助提交 / 替换；你在这里补录与剔除',
+              '同学自助提交 / 替换；你在这里补录、审核与剔除',
               <>
+                {materialBar()}
                 <ManualEntryButton admin={admin} stage="apply" />
                 {roster('apply')}
               </>,
@@ -570,6 +596,7 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
               '确认笔试名单',
               RECRUIT_ACTION_META.confirm_written.description,
               <>
+                {materialBar()}
                 {selectionTools('apply')}
                 {roster('apply', { checkbox: true })}
                 {actionCard('confirm_written', selectedIds)}

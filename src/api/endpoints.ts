@@ -9,6 +9,7 @@ import type {
 import type {
   CheckinStage,
   RecruitAction,
+  MaterialStatus,
   RecruitActionResult,
   RecruitCheckinCodeMap,
   RecruitCycleConfig,
@@ -332,7 +333,7 @@ export function adminGetRecruit() {
  * 保存本届名称 / 四个群号 / 邮件模板。
  *
  * 界面上分属两处、边界清晰（判据：下一届还要不要重新填一次）：
- * - **跨届通用** → 「设置」页（`RecruitSettingsView`）：七封邮件模板、官网招新文案；
+ * - **跨届通用** → 「设置」页（`RecruitSettingsView`）：八封邮件模板、官网招新文案；
  * - **只属于本届** → 「流程」页的本届信息面板（`CycleInfoPanel`）：名称、四个 QQ 群号。
  *
  * 注意**不接受 `state`** —— 整届状态只能通过 `adminRunRecruitAction` 推进，
@@ -523,6 +524,14 @@ export interface UpdateApplicationBody {
   email?: string
   phone?: string
   qq?: string
+  /**
+   * 材料审核（只在报名阶段与「待确认笔试名单」期间可用）：
+   * `approved` 通过 / `rejected` 驳回 / `''` 退回待审核。
+   * **驳回会自动发出一封「材料驳回通知」**，所以必须同时给出理由。
+   */
+  material?: MaterialStatus
+  /** 驳回理由（必填，会写进给同学的邮件） */
+  materialReason?: string
   /** 补发某封信（状态不变也能发） */
   notice?: RecruitMailKind
 }
@@ -543,14 +552,16 @@ export function adminUpdateApplication(id: string, body: UpdateApplicationBody) 
 
 export function adminBulkApplications(body: {
   ids: string[]
-  action: 'checkin' | 'absent' | 'withdraw'
+  /** approve_material / reject_material 都是材料审核；后者必须带 materialReason */
+  action: 'checkin' | 'absent' | 'withdraw' | 'approve_material' | 'reject_material'
   stage?: CheckinStage
+  materialReason?: string
 }) {
-  return apiRequest<{ moved: number }>(
-    '/api/admin/applications/bulk',
-    jsonInit('POST', body),
-    { timeoutMs: 60_000 },
-  )
+  return apiRequest<{
+    moved: number
+    /** 批量驳回会逐人发信，这里给出汇总（其余批量动作没有信） */
+    mail: { sent: number; failed: number; summary: string } | null
+  }>('/api/admin/applications/bulk', jsonInit('POST', body), { timeoutMs: 120_000 })
 }
 
 export function adminNotifyApplications(body: { ids: string[]; subject: string; body: string }) {

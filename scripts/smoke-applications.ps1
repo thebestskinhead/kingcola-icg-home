@@ -7,6 +7,7 @@
 #   3) 提交报名表（multipart + 文件头校验 + 落桶 + 重命名）；重复提交要先确认替换
 #   4) 报名表私有性：匿名与学生本人都拿不到，只有管理员能下载
 #   5) 补录：报名阶段（JSON，无表）与笔试现场（multipart，带表）
+#  5b) 材料审核：驳回（自动发信 + 理由必填）→ 同学重传后回到待审核 → 未通过者不能进笔试 → 批量通过
 #   6) 结束报名 → 确认笔试名单（勾选者晋级并发邀请函，未勾选者判未通过且**不发信**）
 #   7) 签到二维码：只绑阶段、签发新码自动作废旧码、按姓名 + 学号签到、重复扫码提示已签到
 #   8) 结束笔试 → 未签到者自动缺考（不发信）→ 补签撤销缺考
@@ -187,11 +188,44 @@ try {
     $afterUrl = (Api 'GET' "/api/admin/applications/$manualId" $null $jar).data.application.fileUrl
     Check '替换报名表后指向新文件' ($afterUrl -ne '' -and $afterUrl -ne $beforeUrl)
 
+    # ===== 4c. 材料审核（通过 / 驳回 + 驳回发信 + 同学改材料） =====
+    Write-Host "`n4c) 材料审核"
+    $rejectedA = (Api 'PUT' "/api/admin/applications/$($appIds['a'])" @{ material = 'rejected'; materialReason = '报名表缺成绩单页，请补齐后重新上传' } $jar)
+    Check '驳回材料：状态与理由都写进记录' ($rejectedA.data.application.materialStatus -eq 'rejected' -and $rejectedA.data.application.materialReason -match '成绩单') $rejectedA.data.application.materialReason
+    Check '驳回自动发出「材料驳回通知」' ($null -ne $rejectedA.data.mail -and $rejectedA.data.mail.kind -eq 'material_rejected') $rejectedA.data.mail.code
+    $rejectLogs = (Api 'GET' '/api/admin/recruit/mails' $null $jar).data.logs
+    # 收件人按记录取（学生甲的邮箱在前面「替换材料」时已经改过，别写死）
+    Check '驳回通知进了发信日志（收件人是本人）' (@($rejectLogs | Where-Object { $_.kind -eq 'material_rejected' -and $_.applicationId -eq $appIds['a'] }).Count -ge 1) ($rejectLogs | ConvertTo-Json -Compress)
+    Check '驳回不写理由会被拒（400 REASON_REQUIRED）' ((Api 'PUT' "/api/admin/applications/$($appIds['b'])" @{ material = 'rejected' } $jar).error.code -eq 'REASON_REQUIRED')
+
+    # 同学侧：看得到「已驳回 + 理由」，并据此重新上传材料
+    $mineA = (Api 'GET' '/api/applications/me' $null $students[0].token).data.application
+    Check '学生能看到自己的材料状态与驳回理由' ($mineA.materialStatus -eq 'rejected' -and $mineA.materialReason -match '成绩单') $mineA.materialStatus
+    # 替换要带 query 上的 replace=true（后端只认 query，见 worker/routes/applications.ts）
+    $resubmit = (Status 'POST' '/api/applications?replace=true' '' $students[0].token @{ file = "@$pdfPath;type=application/pdf"; email = 'a@example.edu.cn'; phone = '13800000000'; qq = '123456' })
+    Check '被驳回后可以重新上传材料（200）' ($resubmit -eq '200') $resubmit
+    $afterResubmit = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    Check '重传后审核状态回到「待审核」、旧理由被清掉' ($afterResubmit.materialStatus -eq '' -and $afterResubmit.materialReason -eq '') "status=$($afterResubmit.materialStatus)"
+    Check '新报名默认就是「待审核」' ((Api 'GET' "/api/admin/applications/$($appIds['b'])" $null $jar).data.application.materialStatus -eq '')
+
+    # 再驳回一次，用来验证「没通过审核的人不能进笔试」
+    $null = Api 'PUT' "/api/admin/applications/$($appIds['a'])" @{ material = 'rejected'; materialReason = '附件打不开，请重新导出后上传' } $jar
+
     # ===== 5. 结束报名 → 确认笔试名单 =====
     Write-Host "`n5) 结束报名与确认笔试名单"
     $ended = (Api 'POST' '/api/admin/recruit/actions' @{ action = 'end_apply' } $jar).data
     Check '结束报名 → apply_review' ($ended.state -eq 'apply_review') $ended.state
     Check '报名通道随之关闭（提交 403）' ((Status 'POST' '/api/applications' '' $students[2].token @{ file = "@$pdfPath;type=application/pdf"; email = 'c@example.edu.cn'; phone = '13800000000'; qq = '123456' }) -eq '403')
+
+    # 材料没通过审核的人不能被勾选进笔试 —— 审核不是装饰
+    $materialGate = (Api 'POST' '/api/admin/recruit/actions' @{ action = 'confirm_written'; selectedIds = @($appIds['a'], $appIds['b']) } $jar)
+    Check '材料未通过的人不能确认进笔试（409 MATERIAL_NOT_APPROVED）' ($materialGate.ok -eq $false -and $materialGate.error.code -eq 'MATERIAL_NOT_APPROVED') $materialGate.error.message
+
+    # 批量通过（「待确认笔试名单」期间同样能审）
+    $approved = (Api 'POST' '/api/admin/applications/bulk' @{ ids = @($appIds['a'], $appIds['b'], $appIds['c']); action = 'approve_material' } $jar).data
+    Check '批量通过材料审核（3 人）' ($approved.moved -eq 3) $approved.moved
+    $approvedA = (Api 'GET' "/api/admin/applications/$($appIds['a'])" $null $jar).data.application
+    Check '通过后驳回理由被清掉' ($approvedA.materialStatus -eq 'approved' -and $approvedA.materialReason -eq '') $approvedA.materialStatus
 
     $noSelection = (Api 'POST' '/api/admin/recruit/actions' @{ action = 'confirm_written' } $jar)
     Check '没勾选人就确认名单会被拒（409）' ($noSelection.ok -eq $false -and $noSelection.error.code -eq 'BLOCKED') $noSelection.error.message
@@ -211,6 +245,7 @@ try {
     Write-Host "`n6) 签到二维码与扫码签到"
     $code = (Api 'POST' '/api/admin/recruit/checkin-codes' @{ stage = 'written'; ttlHours = 6 } $jar).data
     $writtenToken = $code.code.token
+    Check '笔试阶段不能再改材料审核（409 STAGE_NOT_APPLICABLE）' ((Api 'PUT' "/api/admin/applications/$($appIds['a'])" @{ material = 'rejected'; materialReason = 'x' } $jar).error.code -eq 'STAGE_NOT_APPLICABLE')
     Check '签发笔试二维码（返回带 token 的地址）' ($code.url -match "/checkin/$writtenToken$") $code.url
     $again2 = (Api 'POST' '/api/admin/recruit/checkin-codes' @{ stage = 'written'; ttlHours = 6 } $jar).data
     Check '重发换新 token' ($again2.code.token -ne $writtenToken)

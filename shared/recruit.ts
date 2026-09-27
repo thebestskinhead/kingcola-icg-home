@@ -280,6 +280,41 @@ export function validateApplicationForm(input: Partial<ApplicationFormInput>): s
   return null
 }
 
+// ---- 材料审核（报名阶段后台逐个通过 / 驳回） ----
+
+/**
+ * 材料审核状态。只在报名阶段有意义 —— 它决定的就是「这个人能不能进笔试名单」。
+ *
+ * 空串 = **待审核**：任何新报名都是待审核，**同学重传材料后也会回到待审核**
+ * （否则「改好了却还是被驳回」，而理由指向的那一版材料早就不在了）。
+ */
+export type MaterialStatus = '' | 'approved' | 'rejected'
+
+export const MATERIAL_STATUSES: readonly MaterialStatus[] = ['', 'approved', 'rejected']
+
+export const MATERIAL_STATUS_LABELS: Record<MaterialStatus, string> = {
+  '': '待审核',
+  approved: '材料已通过',
+  rejected: '材料已驳回',
+}
+
+export function isMaterialStatus(value: string): value is MaterialStatus {
+  return (MATERIAL_STATUSES as readonly string[]).includes(value)
+}
+
+/** 驳回理由长度上限：它会进邮件正文，太长会把信写得很怪 */
+export const MATERIAL_REASON_MAX = 200
+
+/**
+ * 「确认笔试名单」的门禁：**只让审核通过的人进下一阶段**。
+ *
+ * 没有这道闸，审核就只是装饰 —— 后台辛苦看完一轮，勾选时照样能把被驳回的人送进笔试。
+ * 被拦住时后台会明确报出是哪几个人没通过（见 `worker/lib/recruit-cycle.ts` 的 `promote()`）。
+ */
+export function isMaterialApproved(record: Pick<Application, 'materialStatus'>): boolean {
+  return record.materialStatus === 'approved'
+}
+
 // ============================================================================
 // 五、邀请函
 // ============================================================================
@@ -835,6 +870,8 @@ export type RecruitMailKind =
   | 'thanks_interview'
   /** 感谢信 · 答辩未通过 */
   | 'thanks_defense'
+  /** 材料驳回通知（含驳回理由，要求同学改好重传） */
+  | 'material_rejected'
 
 export const RECRUIT_MAIL_KINDS: readonly RecruitMailKind[] = [
   'written_invite',
@@ -844,6 +881,7 @@ export const RECRUIT_MAIL_KINDS: readonly RecruitMailKind[] = [
   'thanks_written',
   'thanks_interview',
   'thanks_defense',
+  'material_rejected',
 ]
 
 export interface RecruitMailMeta {
@@ -866,6 +904,11 @@ export const RECRUIT_MAIL_META: Record<RecruitMailKind, RecruitMailMeta> = {
   thanks_written: { label: '感谢信 · 笔试', audience: '笔试未通过的同学', trigger: '确认面试名单时发出' },
   thanks_interview: { label: '感谢信 · 面试', audience: '面试未录取的同学', trigger: '确认录取名单时发出' },
   thanks_defense: { label: '感谢信 · 答辩', audience: '答辩未通过的同学', trigger: '确认最终名单时发出' },
+  material_rejected: {
+    label: '材料驳回通知',
+    audience: '材料没通过审核的同学',
+    trigger: '后台在报名阶段点「驳回材料」时立即发出，正文含驳回理由',
+  },
 }
 
 export interface MailTemplate {
@@ -890,6 +933,7 @@ export const RECRUIT_MAIL_VARIABLES: ReadonlyArray<{ token: string; desc: string
   { token: '{probationGroup}', desc: '预备成员 QQ 群号' },
   { token: '{formalGroup}', desc: '正式成员 QQ 群号' },
   { token: '{inviteLink}', desc: '邀请函确认链接（仅正式邀请函有值）' },
+  { token: '{rejectReason}', desc: '材料驳回理由（仅材料驳回通知有值，管理员填写）' },
   { token: '{studio}', desc: '工作室名称' },
   { token: '{contactEmail}', desc: '工作室联系邮箱' },
   { token: '{contactAddress}', desc: '工作室地址' },
@@ -1016,6 +1060,25 @@ export const DEFAULT_RECRUIT_TEMPLATES: RecruitTemplates = {
       '希望这段时间的项目经历对你之后的成长有所帮助。',
       '',
       '祝你学习顺利，也请继续与我们保持联系。',
+      '',
+      SIGN_DEFAULT,
+    ].join('\n'),
+  },
+
+  material_rejected: {
+    enabled: true,
+    subject: '【{studio}】请修改你的报名材料 · {name}',
+    body: [
+      '{name} 同学：',
+      '',
+      '你好。我们已经收到你报名 {cycleName} 的材料，但这一版还没有通过审核：',
+      '',
+      '{rejectReason}',
+      '',
+      '请在报名通道关闭前回到官网「加入我们」页面，按上面的说明修改并重新上传材料。',
+      '重新上传后我们会再看一遍，结果会另行通知你。',
+      '',
+      '如果对这条理由有疑问，直接回复本邮件即可。',
       '',
       SIGN_DEFAULT,
     ].join('\n'),

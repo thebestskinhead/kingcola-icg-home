@@ -4,7 +4,7 @@
  */
 
 // 只引类型：编译后会被完全擦除，因此 recruit.ts ↔ types.ts 之间不存在运行时循环依赖
-import type { RecruitResult, RecruitStage } from './recruit'
+import type { MaterialStatus, RecruitResult, RecruitStage } from './recruit'
 
 export type MemberStatus = 'current' | 'alumni'
 
@@ -132,6 +132,15 @@ export interface Application {
   confirmedAt: string
   /** 转正后对应 members.id */
   memberId: string
+
+  /**
+   * 材料审核（只在报名阶段有意义，见 `shared/recruit.ts` 的 `MaterialStatus`）：
+   * `''` 待审核 / `approved` 通过 / `rejected` 驳回；驳回理由**会发给同学**，所以进学生视图。
+   */
+  materialStatus: MaterialStatus
+  /** 驳回理由（写给同学看，会进驳回邮件；通过时为空） */
+  materialReason: string
+  materialReviewedAt: string
 
   /** 管理员备注（不对学生展示） */
   note: string

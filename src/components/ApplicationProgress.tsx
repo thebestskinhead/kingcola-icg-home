@@ -2,14 +2,16 @@ import {
   applicationLabel,
   applicationTone,
   isApplicationFinished,
+  MATERIAL_STATUS_LABELS,
   RECRUIT_STAGES,
   RECRUIT_STAGE_LABELS,
   stageIndex,
+  type MaterialStatus,
   type RecruitTone,
 } from '@shared/recruit'
 import type { Application } from '@shared/types'
 import { cn } from '@/lib/utils'
-import { ArrowRight, Check, CircleDot, Users, X } from 'lucide-react'
+import { ArrowRight, Check, CircleDot, FileText, Users, X } from 'lucide-react'
 
 /** ISO 或北京时间字符串 → 展示用（统一按北京时间口径解） */
 function formatMoment(value: string): string {
@@ -28,6 +30,13 @@ function formatMoment(value: string): string {
   return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(
     shifted.getUTCDate(),
   )} ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`
+}
+
+/** 材料审核状态的配色：与后台名单里的徽标保持一致（灰 / 绿 / 红） */
+const MATERIAL_TONE: Record<MaterialStatus, string> = {
+  '': 'bg-secondary text-muted-foreground',
+  approved: 'bg-emerald-500/10 text-emerald-700',
+  rejected: 'bg-destructive/10 text-destructive',
 }
 
 const TONE_STYLES: Record<RecruitTone, string> = {
@@ -106,6 +115,32 @@ export function ApplicationProgress({
             {application.name} · {application.studentId}
           </span>
         </div>
+
+        {/* 材料审核状态：报名阶段同学最关心的就是这个（只在报名阶段显示） */}
+        {application.stage === 'apply' && (
+          <div className="mt-3 rounded-xl bg-background/60 px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-muted-foreground">材料审核</span>
+              <span
+                className={cn('rounded-full px-2 py-0.5 font-medium', MATERIAL_TONE[application.materialStatus])}
+              >
+                {MATERIAL_STATUS_LABELS[application.materialStatus]}
+              </span>
+            </div>
+            {application.materialStatus === 'rejected' ? (
+              <p className="mt-1 leading-relaxed text-destructive">
+                驳回理由：{application.materialReason || '（管理员未填写理由）'}
+              </p>
+            ) : (
+              <p className="mt-1 text-muted-foreground">
+                {application.materialStatus === 'approved'
+                  ? '材料没问题，审核已经通过。'
+                  : '我们已经收到你的材料，正在审核中。'}
+              </p>
+            )}
+          </div>
+        )}
 
         {group && groupLabel ? (
           <div className="mt-3 space-y-1 text-sm text-foreground/80">

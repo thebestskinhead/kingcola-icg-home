@@ -57,6 +57,8 @@ export function buildNoticeVars(record: ApplicationRecord, ctx: NoticeContext): 
     probationGroup: cycle.groups.probation,
     formalGroup: cycle.groups.formal,
     inviteLink: record.inviteToken ? buildInviteUrl(ctx.origin, record.inviteToken) : '',
+    // 驳回理由：只在「材料驳回通知」里有值（其它信里会渲染成空串，见 renderTemplate 的规则）
+    rejectReason: record.materialReason,
     studio: studio.studioName,
     contactEmail: studio.contactEmail,
     contactAddress: studio.contactAddress,

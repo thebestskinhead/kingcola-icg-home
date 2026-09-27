@@ -1,5 +1,6 @@
 import {
   columnList,
+  defaultEntity,
   entityToRow,
   isSafeIdentifier,
   normalizeId,
@@ -68,7 +69,9 @@ export async function getEntity(env: Env, def: ResourceDef, id: string): Promise
 
 export async function createEntity(env: Env, def: ResourceDef, input: Entity): Promise<Entity> {
   const now = new Date().toISOString()
-  const row = entityToRow(def, input)
+  // 创建时先用资源默认值补齐缺省字段，保证 INSERT 覆盖**全部**列 ——
+  // 这样「新增」出来的记录每个字段都有明确取值，而不是依赖建表 SQL 的 DEFAULT。
+  const row = entityToRow(def, { ...defaultEntity(def), ...input })
   const columns = Object.keys(row)
 
   // 自增主键：不带 id 插入，用 D1 返回的 last_row_id 取回分配到的值
@@ -136,7 +139,8 @@ export async function deleteEntity(env: Env, def: ResourceDef, id: string): Prom
  */
 export async function insertSeedEntity(env: Env, def: ResourceDef, entity: Entity): Promise<void> {
   const now = new Date().toISOString()
-  const row = entityToRow(def, entity)
+  // 与 createEntity 同一口径：种子数据也补齐全部列，缺省值不落到建表 SQL 的 DEFAULT 上
+  const row = entityToRow(def, { ...defaultEntity(def), ...entity })
   const columns = Object.keys(row)
 
   if (def.autoId) {
