@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, getRuntimeConfig, getSiteConfig, isInitialized, refreshRuntimeConfig } from './client'
-import { fetchBootstrap, type BootstrapData, type RecruitPhaseInfo } from './endpoints'
+import { fetchBootstrap, type BootstrapData, type RecruitStatusInfo } from './endpoints'
 import { RECRUIT_STATE_LABELS } from '@shared/recruit'
 import type { SsoTarget } from '@shared/runtime'
 import { DEFAULT_SITE_CONFIG, type SiteConfig } from '@shared/types'
@@ -22,7 +22,7 @@ const FALLBACK: BootstrapData = {
     gate: 'not_open',
     name: '',
     notice: '',
-  } satisfies RecruitPhaseInfo,
+  } satisfies RecruitStatusInfo,
 }
 
 export interface AsyncState<T> {

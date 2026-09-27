@@ -40,7 +40,7 @@ import { apiRequest, jsonInit } from './client'
  * 首屏聚合里顺带带的招新状态（与 `/api/public/recruit` 同一形状）。
  * 首页横幅、顶部提示的显隐由它派生 —— 不必再发一次请求，也没有「招新总开关」可配。
  */
-export type RecruitPhaseInfo = RecruitPublicStatus
+export type RecruitStatusInfo = RecruitPublicStatus
 
 export interface BootstrapData {
   members: Member[]
@@ -48,7 +48,7 @@ export interface BootstrapData {
   news: NewsItem[]
   slides: Slide[]
   site: SiteConfig
-  recruit: RecruitPhaseInfo
+  recruit: RecruitStatusInfo
 }
 
 export function fetchBootstrap(signal?: AbortSignal) {

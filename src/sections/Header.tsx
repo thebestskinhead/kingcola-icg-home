@@ -1,7 +1,7 @@
 import { Link, NavLink } from 'react-router'
 import { StudioLogo } from '@/components/brand'
 import { isRecruitVisible } from '@shared/recruit'
-import type { RecruitPhaseInfo } from '@/api/endpoints'
+import type { RecruitStatusInfo } from '@/api/endpoints'
 import { PAGE_LABELS, PAGE_PATHS, type PageKey, type SiteConfig } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
  */
 const NAV_ORDER: PageKey[] = ['home', 'news', 'projects', 'members', 'join']
 
-export function Header({ site, recruit }: { site: SiteConfig; recruit?: RecruitPhaseInfo }) {
+export function Header({ site, recruit }: { site: SiteConfig; recruit?: RecruitStatusInfo }) {
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">

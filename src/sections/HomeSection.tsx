@@ -8,7 +8,7 @@ import {
   type SiteConfig,
   type Slide,
 } from '@/types'
-import type { RecruitPhaseInfo } from '@/api/endpoints'
+import type { RecruitStatusInfo } from '@/api/endpoints'
 import { parseStatLabels, splitParagraphs } from '@shared/site'
 import { ArrowRight, ArrowUpRight, Award, Users, FolderKanban, UserCheck, Newspaper } from 'lucide-react'
 import { HeroCarousel } from '@/sections/HeroCarousel'
@@ -29,7 +29,7 @@ export function HomeSection({
   slides: Slide[]
   site: SiteConfig
   /** 招新状态（来自首屏聚合）；报名进行中才显示横幅 —— 笔试/面试期间的横幅只会误导人来报名 */
-  recruit?: RecruitPhaseInfo
+  recruit?: RecruitStatusInfo
 }) {
   const currentCount = members.filter((m) => m.status === 'current').length
   const alumniCount = members.filter((m) => m.status === 'alumni').length
