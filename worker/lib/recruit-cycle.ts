@@ -6,10 +6,12 @@
  * 校验（能不能做）与推进（做完变成什么状态）都读 `shared/recruit.ts` 里的 RECRUIT_ACTION_META，
  * 所以不可能出现「界面能点但后端拒绝」。
  *
- * 三条贯穿始终的规则：
+ * 四条贯穿始终的规则：
  * 1. **邮件不阻断流转**：发信失败照常推进，失败原因如实返回（后台可对单人重发）；
  * 2. **缺考与未通过初筛不发信**（本人没收到任何信也不该收到「你被淘汰了」以外的打扰）；
- * 3. **关闭本届先导出存档再清库**：对象存储没接通就拒绝关闭，绝不把数据清了却拿不出存档。
+ * 3. **关闭本届先导出存档再清库**：对象存储没接通就拒绝关闭，绝不把数据清了却拿不出存档；
+ * 4. **清空报名（`reset_apply`）是唯一的例外**：它就是为了丢掉一批不想要的数据，
+ *    所以刻意**不导出存档、也不因存储不可用而拒绝** —— 但会把「删了什么、什么没删掉」如实回报。
  */
 
 import {
@@ -107,6 +109,9 @@ export async function runRecruitAction(
     case 'open_apply':
     case 'end_apply':
       return await plainTransition(ctx, action)
+
+    case 'reset_apply':
+      return await resetApply(ctx)
 
     case 'end_written':
     case 'end_interview':
@@ -313,6 +318,66 @@ async function promote(
     failed: sends.filter((item) => !item.sent).length,
     summary: summarizeMailResults(sends),
   }, null)
+}
+
+// ---------------------------------------------------------------------------
+// 强制结束报名并清空数据（推倒重来）
+// ---------------------------------------------------------------------------
+
+/**
+ * 强制结束报名并清空数据：**删掉本届已收到的报名与材料，然后回到「备招」**。
+ *
+ * 为什么需要它：报名被刷屏、或本届配置搞错（名称 / 群号写错、模板先发错了）时，
+ * 已经收上来的那批表全是脏数据 —— 与其在名单里一条条删、还要一个个去清理孤儿文件，
+ * 不如一键回到起点重新收一批干净的。
+ *
+ * 与「关闭本届」的三点区别（都是刻意的）：
+ *   1. **不导出存档**：它就是为了丢掉这批数据，导出反而是在留下不想要的东西；
+ *   2. **不因对象存储不可用而拒绝**：库该清就得清，删不掉的文件如实报数让管理员去处理；
+ *   3. **结束在「备招」而不是「休眠」**：报名流程结束了，但本届还在（名称与群号保留），
+ *      可以立刻重新「开启报名」。
+ *
+ * 先删文件再清库：库一清就再也找不回 `fileUrl`，对象存储里会留下无人认领的孤儿对象。
+ */
+async function resetApply(ctx: ActionContext): Promise<RecruitActionResult> {
+  const { env } = ctx
+  const records = await listAllApplications(env)
+  const withFile = records.filter((record) => record.fileUrl !== '')
+
+  let files = 0
+  let filesFailed = 0
+  if (await storageReady(env, 'applications')) {
+    const storage = await getStorage(env, 'applications')
+    for (const record of withFile) {
+      const ref = await resolveFileRef(env, record.fileUrl)
+      // 归档 CSV 也在 applications/ 前缀下，但它不属于任何人 —— 别顺手删了往届存档
+      if (!ref || ref.purpose !== 'applications' || ref.key.startsWith(RECRUIT_ARCHIVE_SCOPE)) continue
+      try {
+        await storage.delete(ref.key)
+        files += 1
+      } catch {
+        filesFailed += 1
+      }
+    }
+  } else {
+    // 存储没接通：库照清，但要让管理员知道文件还在桶里
+    filesFailed = withFile.length
+  }
+
+  await clearRecruitData(env)
+  const state = await setState(env, RECRUIT_ACTION_META.reset_apply.to)
+
+  await audit(
+    ctx,
+    'reset_apply',
+    `清空本届报名：删除 ${records.length} 条报名记录、${files} 个报名表文件` +
+      `${filesFailed > 0 ? `（${filesFailed} 个文件没删掉，需到对象存储里手动清理）` : ''}；回到备招`,
+  )
+
+  return {
+    ...buildResult('reset_apply', state, records.length, EMPTY_MAIL, null),
+    cleaned: { applications: records.length, files, filesFailed },
+  }
 }
 
 // ---------------------------------------------------------------------------

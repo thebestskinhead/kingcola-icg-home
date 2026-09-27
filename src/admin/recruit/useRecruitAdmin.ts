@@ -25,7 +25,6 @@ import {
   RECRUIT_STATE_LABELS,
   type CheckinStage,
   type RecruitAction,
-  type RecruitActionResult,
   type RecruitCheckinCodeMap,
   type RecruitCycleConfig,
   type RecruitCycleState,
@@ -52,6 +51,7 @@ import {
   adminUploadApplicationDoc,
   type AdminApplication,
   type MailLogRow,
+  type RunRecruitActionResult,
   type UpdateApplicationBody,
 } from '@/api/endpoints'
 import { downloadFile } from './recruit-ui'
@@ -64,13 +64,38 @@ export interface ArchiveInfo {
   members: number
 }
 
-/** 动作执行后的汇总，供调用方决定要不要把选择清空 */
-export interface RecruitActionResultBundle extends RecruitActionResult {
-  label: string
-}
+/** 动作执行后的汇总（就是接口返回的形态：含按钮名与「接下来做什么」） */
+export type RecruitActionResultBundle = RunRecruitActionResult
 
 function describeError(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback
+}
+
+/**
+ * 动作结果 → 一句人话。
+ *
+ * 「清空报名」这类破坏性动作要把删掉的东西如实报出来（含**没删掉**的文件数），
+ * 其余动作照旧报「改了几条 / 发了几封 / 接下来做什么」。
+ */
+function describeAction(result: RecruitActionResultBundle): string {
+  if (result.cleaned) {
+    return [
+      `已删除 ${result.cleaned.applications} 条报名记录、${result.cleaned.files} 个报名表文件`,
+      result.cleaned.filesFailed > 0
+        ? `有 ${result.cleaned.filesFailed} 个文件没能删掉（对象存储不可用或已失联），建议到「对象存储」页确认`
+        : '',
+      '现在处于「备招」，可以重新「开启报名」从头收一批干净的表',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
+  return [
+    result.moved > 0 ? `${result.moved} 条记录已更新` : '',
+    result.mail.summary || '没有需要发送的邮件',
+    result.next ? `接下来：${result.next.label}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 export function useRecruitAdmin() {
@@ -141,15 +166,7 @@ export function useRecruitAdmin() {
         const result = await adminRunRecruitAction({ action, selectedIds })
         setArchive(result.archive ?? null)
         await load()
-        toast.success(`${result.label}：已完成`, {
-          description: [
-            result.moved > 0 ? `${result.moved} 条记录已更新` : '',
-            result.mail.summary || '没有需要发送的邮件',
-            result.next ? `接下来：${result.next.label}` : '',
-          ]
-            .filter(Boolean)
-            .join(' · '),
-        })
+        toast.success(`${result.label}：已完成`, { description: describeAction(result) })
         return result
       } catch (err) {
         toast.error(describeError(err, '操作失败，请稍后重试'))

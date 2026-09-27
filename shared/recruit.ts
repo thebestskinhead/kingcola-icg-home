@@ -645,6 +645,11 @@ export type RecruitAction =
   | 'open_apply'
   /** 结束报名（不再收表 / 替换），名单仍可调整 */
   | 'end_apply'
+  /**
+   * 强制结束报名并清空数据：已收到的报名记录、报名表文件与发信日志全部删除，回到「备招」。
+   * 用途是**推倒重来**（报名被刷屏、或本届配置搞错时，与其一条条删不如回到起点重新收）。
+   */
+  | 'reset_apply'
   /** 确认笔试名单：勾选的人进笔试并发邀请函，其余判未通过初筛（不发信） */
   | 'confirm_written'
   /** 结束笔试：未签到者自动标记缺考（不发信），解锁成绩录入 */
@@ -664,6 +669,7 @@ export const RECRUIT_ACTIONS: readonly RecruitAction[] = [
   'start_cycle',
   'open_apply',
   'end_apply',
+  'reset_apply',
   'confirm_written',
   'end_written',
   'advance_written',
@@ -712,6 +718,15 @@ export const RECRUIT_ACTION_META: Record<RecruitAction, RecruitActionMeta> = {
     to: 'apply_review',
     needsSelection: false,
     description: '报名入口关闭，不再收表与替换材料；名单仍可调整，确认名单后才发邀请函。不发信。',
+  },
+  reset_apply: {
+    label: '强制结束报名并清空数据',
+    // 报名进行中、或已经点了「结束报名」但发现那批表全是脏的，两种情况都允许清
+    from: ['apply', 'apply_review'],
+    to: 'prepare',
+    needsSelection: false,
+    description:
+      '官网立刻停收表，并永久删除本届已收到的全部报名记录、报名表文件与发信日志；然后回到「备招」，可以重新「开启报名」从头收一批干净的表。不可撤销。',
   },
   confirm_written: {
     label: '确认名单并发出笔试邀请函',
@@ -1103,6 +1118,11 @@ export interface RecruitActionResult {
   }
   /** 关闭本届时给出存档地址 */
   archive: { url: string; total: number; members: number } | null
+  /**
+   * 「清空报名」这类动作删掉了什么。
+   * 刻意如实报数（含没删掉的文件数）—— 这是破坏性动作，管理员要能立刻核对结果。
+   */
+  cleaned?: { applications: number; files: number; filesFailed: number }
 }
 
 /** 后台看板的统计（漏斗 + 状态细分），由名单实时算出 */

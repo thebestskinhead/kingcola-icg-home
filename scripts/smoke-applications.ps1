@@ -13,6 +13,7 @@
 #   9) 生成面试名单 / 结束面试 / 确认录取 / 结束答辩 / 确认最终名单（转正 + 一次性邀请函）
 #  10) 名单筛选、导出 CSV、群发通知、批量退出、单人改判与补发某封信
 #  11) 关闭本届：先导出存档再清库，最终回到休眠
+#  12) 强制结束报名并清空数据（推倒重来）：清记录 + 清报名表文件 + 退回备招，之后能重新开启报名
 #
 # ⚠️ 整届状态只能靠「点动作」推进，所以跑完会停在休眠（这是刻意的）——
 #    脚本会把你原来的名称、群号与模板写回去，但状态无法「复原」，本地库跑完即休眠。
@@ -323,6 +324,37 @@ try {
     Check '签到二维码已作废（旧 token 失效）' ((Status 'GET' "/api/applications/checkin/$($defenseCode.token)") -eq '404')
     $code = (Api 'POST' '/api/admin/recruit/checkin-codes' @{ stage = 'written' } $jar)
     Check '休眠期签发二维码被拒（409）' ($code.ok -eq $false -and $code.error.code -eq 'STAGE_NOT_ACTIVE')
+
+    # ===== 12b. 强制结束报名并清空数据（推倒重来） =====
+    Write-Host "`n12b) 强制结束报名并清空数据"
+    # 它属于报名流程，别的阶段不该能点
+    $blockedReset = (Api 'POST' '/api/admin/recruit/actions' @{ action = 'reset_apply' } $jar)
+    Check '休眠期不能清空报名（409 BLOCKED）' ($blockedReset.ok -eq $false -and $blockedReset.error.code -eq 'BLOCKED') ($blockedReset | ConvertTo-Json -Compress)
+
+    $null = Api 'POST' '/api/admin/recruit/actions' @{ action = 'start_cycle' } $jar
+    $null = Api 'PUT' '/api/admin/recruit' @{ cycle = @{ name = '冒烟测试招新（待清空）'; groups = @{ written = '710000001'; interview = '710000002'; probation = '710000003'; formal = '710000004' } } } $jar
+    $null = Api 'POST' '/api/admin/recruit/actions' @{ action = 'open_apply' } $jar
+    foreach ($s in $students[0..1]) {
+        $null = Status 'POST' '/api/applications' '' $s.token @{ file = "@$pdfPath;type=application/pdf"; email = "$($s.key)@example.edu.cn"; phone = '13800000000'; qq = '123456' }
+    }
+    $beforeReset = (Api 'GET' '/api/admin/applications' $null $jar).data
+    Check '清空前：2 份报名都在，且都带报名表' ($beforeReset.total -eq 2 -and ($beforeReset.items | Where-Object { $_.fileUrl -ne '' }).Count -eq 2) $beforeReset.total
+
+    # 已经点过「结束报名」也还能清（apply_review 同样在可选范围内）
+    $null = Api 'POST' '/api/admin/recruit/actions' @{ action = 'end_apply' } $jar
+    $cleared = (Api 'POST' '/api/admin/recruit/actions' @{ action = 'reset_apply' } $jar).data
+    Check '强制清空：回到备招（报名通道随之关闭）' ($cleared.state -eq 'prepare') $cleared.state
+    Check '如实汇报：删了 2 条记录、2 个文件且文件全删成功' ($cleared.cleaned.applications -eq 2 -and $cleared.cleaned.files -eq 2 -and $cleared.cleaned.filesFailed -eq 0) ($cleared.cleaned | ConvertTo-Json -Compress)
+    Check '报名数据表已清空' ((Api 'GET' '/api/admin/applications' $null $jar).data.total -eq 0)
+    Check '这些人的发信日志一并清空' ((Api 'GET' '/api/admin/recruit/mails' $null $jar).data.logs.Count -eq 0)
+    $publicAfterReset = (Api 'GET' '/api/public/recruit').data
+    Check '官网回到未开始（不再收表）' ($publicAfterReset.gate -eq 'not_open' -and $publicAfterReset.applyOpen -eq $false) $publicAfterReset.gate
+    Check '清空后学生提交被拒（403）' ((Status 'POST' '/api/applications' '' $students[0].token @{ file = "@$pdfPath;type=application/pdf"; email = 'x@example.edu.cn'; phone = '13800000000'; qq = '123456' }) -eq '403')
+
+    # 本届还在：重新开启报名就能从头收干净的表
+    $null = Api 'POST' '/api/admin/recruit/actions' @{ action = 'open_apply' } $jar
+    Check '清空后可以重新开启报名并收表（201）' ((Status 'POST' '/api/applications' '' $students[0].token @{ file = "@$pdfPath;type=application/pdf"; email = 'x@example.edu.cn'; phone = '13800000000'; qq = '123456' }) -eq '201')
+    $null = Api 'POST' '/api/admin/recruit/actions' @{ action = 'close_cycle' } $jar
 
     # ===== 13. 复原设置 =====
     Write-Host "`n13) 复原名称与群号"

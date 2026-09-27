@@ -252,10 +252,10 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
   const selectedIds = [...selection]
 
   /** 「下一步」按钮块：文案与说明都来自动作表，不在这里另写一套 */
-  const actionCard = (action: RecruitAction, selected: string[] = []) => {
+  const actionCard = (action: RecruitAction, selected: string[] = [], extra = '') => {
     const meta = RECRUIT_ACTION_META[action]
     const reason = admin.blockedReason(action, selected.length)
-    const tone = action === 'close_cycle' ? 'danger' : 'go'
+    const tone = action === 'close_cycle' || action === 'reset_apply' ? 'danger' : 'go'
     return (
       <section
         className={cn(
@@ -279,8 +279,15 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
           disabled={Boolean(reason)}
           onClick={() =>
             setConfirming({
+              // 破坏性动作的二次确认要把「到底删掉什么」说清楚，不能只念一遍按钮说明
               title: meta.label,
-              body: `${meta.description}${selected.length > 0 ? `\n\n将处理勾选的 ${selected.length} 人。` : ''}`,
+              body: [
+                meta.description,
+                extra,
+                selected.length > 0 ? `将处理勾选的 ${selected.length} 人。` : '',
+              ]
+                .filter(Boolean)
+                .join('\n\n'),
               run: () => void admin.runAction(action, selected),
             })
           }
@@ -313,6 +320,15 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
       <div className="space-y-4 px-5 py-4">{children}</div>
     </section>
   )
+
+  /**
+   * 「强制结束报名并清空数据」的确认文案：把此刻真要删掉的东西点清楚。
+   * 这类动作最怕的是「以为只是关个开关」，所以宁可用数字说得啰嗦一点。
+   */
+  const resetInventory = () => {
+    const files = admin.apps.filter((app) => app.fileUrl !== '').length
+    return `本次将删除：${admin.apps.length} 条报名记录（姓名、学号、联系方式、成绩与评语）、${files} 个报名表文件、以及这些人的发信日志。`
+  }
 
   /** 勾选工具：按分数线批量勾选（成绩在哪一列由阶段决定） */
   const selectionTools = (stage: RecruitStage) => {
@@ -542,6 +558,8 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
               </>,
             )}
             {actionCard('end_apply')}
+            {/* 报名被刷屏、或本届配置搞错时的「推倒重来」：清掉这批表，回到备招重新收 */}
+            {actionCard('reset_apply', [], resetInventory())}
           </div>
         )
 
@@ -558,6 +576,8 @@ function FlowView({ admin }: { admin: RecruitAdmin }) {
               </>,
               'after',
             )}
+            {/* 已经点了「结束报名」才发现这批表全是脏的 —— 这里也留一条退路 */}
+            {actionCard('reset_apply', [], resetInventory())}
           </div>
         )
 
