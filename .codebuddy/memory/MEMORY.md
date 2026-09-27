@@ -31,7 +31,7 @@
 - **D1 唯一事实源**；KV 只做配置缓存；R2 用于站点图片与报名表。
 - 站点文案全来自 `site_config['site']`（SiteConfig + DEFAULT_SITE_CONFIG，JSON 合并、无迁移）；新增字段改三处：shared/types.ts → SettingsPage → section；列表解析规则在 `shared/site.ts`。
 - 管理员存 D1 `admin_users`（PBKDF2）；`RECOVERY_TOKEN` 灾备。运维文档 `docs/HANDOVER.md`，改部署/密钥后同步。
-- ⚠️ 工作区被多会话并行修改（含本记忆文件）：动文件前先读当前内容。
+- ⚠️ 工作区被多会话并行修改（含本记忆文件）：动文件前先读当前内容。**提交前必须逐文件 `git diff`**：并行会话的在制功能可能和你的改动交织在同几个文件里（曾出现 applications.ts / endpoints.ts / index.ts 三处），先用 `git show HEAD:<file> \| findstr` 确认 HEAD 是否自洽 —— 若 HEAD 缺少别人新代码引用的符号（如 `receiveImage`），只提交自己的文件会留下**编译不过的 HEAD**，那就必须把那批文件一起提交并在 body 里写明。提交信息用 UTF-8 文件 + `git commit -F`（中文经 shell 传参会乱码）。
 
 ## 对象存储适配层
 - 契约 `shared/storage.ts`：`StoragePurpose = 'site' | 'applications'`（两目标可各配桶）；`StorageTargetConfig`（provider/binding/endpoint/bucket/accessKeyId/secretAccessKey/pathPrefix/publicBase/forcePathStyle/directTtlSeconds）；配置存 `site_config['storage']`，无迁移。
