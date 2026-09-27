@@ -44,7 +44,7 @@ try {
     $paths = @('/', '/members', '/projects', '/news', '/join')
     $newsId = @($boot.data.news)[0].id
     if ($newsId) { $paths += "/news/$newsId" }
-    $paths += @('/admin', '/admin/content/members', '/admin/content/news', '/admin/settings', '/this-path-does-not-exist')
+    $paths += @('/admin', '/admin/content/members', '/admin/content/news', '/admin/roles', '/admin/settings', '/this-path-does-not-exist')
 
     foreach ($path in $paths) {
         try {

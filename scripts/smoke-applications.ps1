@@ -12,6 +12,7 @@
 #   7) 签到二维码：只绑阶段、签发新码自动作废旧码、按姓名 + 学号签到、重复扫码提示已签到
 #   8) 结束笔试 → 未签到者自动缺考（不发信）→ 补签撤销缺考
 #   9) 生成面试名单 / 结束面试 / 确认录取 / 结束答辩 / 确认最终名单（转正 + 一次性邀请函）
+#  9b) 邀请函：本人上传头像（凭证即密权、无需登录）→ 不带头像不能确认加入 → 拒任意外链
 #  10) 名单筛选、导出 CSV、群发通知、批量退出、单人改判与补发某封信
 #  11) 关闭本届：先导出存档再清库，最终回到休眠
 #  12) 强制结束报名并清空数据（推倒重来）：清记录 + 清报名表文件 + 退回备招，之后能重新开启报名
@@ -325,6 +326,27 @@ try {
     $inviteToken = ($inviteUrl -split '/invite/')[-1]
     $inviteInfo = (Api 'GET' "/api/applications/invite/$inviteToken").data
     Check '邀请函可用（返回本人信息与方向选项）' ($inviteInfo.alreadyMember -eq $false -and $inviteInfo.studentId -eq $students[0].id) ($inviteInfo | ConvertTo-Json -Compress)
+
+    # 身份边界（本次改动的核心诉求）：邀请函只下发**学生可自选**的方向，
+    # 「指导老师」这类组织授予的身份既不出现在下拉里，绕过前端直接提交也会被后端拒绝
+    Check '邀请函方向选项里没有「指导老师」' (($inviteInfo.roleOptions -notcontains '指导老师') -and ($inviteInfo.roleOptions -contains '前端开发')) ($inviteInfo.roleOptions -join ' / ')
+    $selfAppointed = Api 'POST' "/api/applications/invite/$inviteToken" @{ title = '指导老师'; direction = '自检方向' }
+    Check '不能给自己选「指导老师」（400）' ($selfAppointed.ok -eq $false -and $selfAppointed.error.code -eq 'VALIDATION_FAILED') ($selfAppointed | ConvertTo-Json -Compress)
+
+    # 邀请函上传头像：凭证即密权（同学可能早就没有教务网登录态了），且确认加入时头像必填
+    $pngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+    $inviteAvatarPath = Join-Path $work 'invite-avatar.png'
+    [IO.File]::WriteAllBytes($inviteAvatarPath, [Convert]::FromBase64String($pngB64))
+    $inviteAvatar = (& curl.exe -s -X POST "$Base/api/applications/invite/$inviteToken/avatar" `
+            -F "file=@$inviteAvatarPath;type=image/png") | ConvertFrom-Json
+    Check '邀请函可上传头像（无需登录态）' ($inviteAvatar.ok -eq $true -and $inviteAvatar.data.url -match '/api/files/avatars/') ($inviteAvatar | ConvertTo-Json -Compress)
+    $badAvatar = (& curl.exe -s -X POST "$Base/api/applications/invite/not-a-real-token/avatar" `
+            -F "file=@$inviteAvatarPath;type=image/png") | ConvertFrom-Json
+    Check '无效邀请函令牌不能上传头像' ($badAvatar.ok -eq $false -and $badAvatar.error.code -eq 'INVITE_NOT_FOUND') ($badAvatar | ConvertTo-Json -Compress)
+    $noAvatar = Api 'POST' "/api/applications/invite/$inviteToken" @{ title = '前端开发'; direction = '自检方向' }
+    Check '确认加入时不带头像被拒（400）' ($noAvatar.ok -eq $false -and $noAvatar.error.code -eq 'VALIDATION_FAILED') ($noAvatar | ConvertTo-Json -Compress)
+    $evilAvatar = Api 'POST' "/api/applications/invite/$inviteToken" @{ title = '前端开发'; direction = '自检方向'; avatarUrl = 'https://evil.example.com/a.png' }
+    Check '拒绝任意外链当头像（400）' ($evilAvatar.ok -eq $false -and $evilAvatar.error.code -eq 'VALIDATION_FAILED') ($evilAvatar | ConvertTo-Json -Compress)
 
     # ===== 11. 名单、导出、群发、改判 =====
     Write-Host "`n11) 名单与导出"

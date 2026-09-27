@@ -158,6 +158,44 @@ try {
     if (-not $blocked) { throw '文字版轮播缺标题竟然通过了校验' }
     Write-Host '轮播校验 OK：图片版可不填标题，文字版标题必填' -ForegroundColor Green
 
+    Step '4b) 成员方向字典（运行时字典驱动「角色」白名单）'
+    $rolesBefore = (Invoke-RestMethod "$base/api/admin/member-roles" -Headers $authHeaders).data.roles
+    Write-Host "方向字典 $($rolesBefore.Count) 个：$((($rolesBefore | Select-Object -First 4).label) -join ' / ')" -ForegroundColor Green
+    if (-not ($rolesBefore | Where-Object { $_.label -eq '指导老师' -and $_.kind -eq 'faculty' -and $_.selectableBySelf -eq $false })) {
+        throw '默认字典里「指导老师」应当是 faculty 且不允许学生自助选择'
+    }
+
+    # 「角色」的合法取值来自运行时字典（shared/resources.ts 里的 options 只是兜底），
+    # 所以写一个字典里不存在的方向**必须**被拒 —— 否则这份字典就形同虚设
+    $badRoleBlocked = $false
+    try {
+        Invoke-RestMethod "$base/api/admin/content/members" -Method Post -Headers $authHeaders `
+            -ContentType 'application/json' -Body (@{
+                name = '冒烟-非法方向'; title = '不存在的方向'; joinYear = '2026'
+                status = 'current'; direction = 'x'; isPI = $false; bio = ''
+            } | ConvertTo-Json) | Out-Null
+    }
+    catch { $badRoleBlocked = $true }
+    if (-not $badRoleBlocked) { throw '角色取值不在方向字典里，却通过了校验' }
+    Write-Host '角色白名单 OK：字典外的方向被拒绝' -ForegroundColor Green
+
+    # 非学生方向即使被提交成「允许自助选择」，后端也必须纠正为 false
+    # （身份是组织授予的 —— 这是邀请函那条边界的根防线）
+    $withProbe = @($rolesBefore) + @(@{
+            label = '冒烟-方向'; kind = 'faculty'; selectableBySelf = $true; order = 999; retired = $false
+        })
+    $savedRoles = (Invoke-RestMethod "$base/api/admin/member-roles" -Method Put -Headers $authHeaders `
+            -ContentType 'application/json' -Body (@{ roles = $withProbe } | ConvertTo-Json -Depth 6)).data.roles
+    if (($savedRoles | Where-Object { $_.label -eq '冒烟-方向' }).selectableBySelf -ne $false) {
+        throw '非学生方向的「学生可自选」没有被纠正为 false'
+    }
+
+    # 复原成进入时的样子（「冒烟-方向」没有被任何成员引用，所以移除不需要 confirmRemoval）
+    $restoredRoles = (Invoke-RestMethod "$base/api/admin/member-roles" -Method Put -Headers $authHeaders `
+            -ContentType 'application/json' -Body (@{ roles = $rolesBefore } | ConvertTo-Json -Depth 6)).data.roles
+    if (@($restoredRoles).Count -ne @($rolesBefore).Count) { throw '方向字典没有复原' }
+    Write-Host '方向字典读写 + 复原 OK（非学生方向的自选开关被强制关闭）' -ForegroundColor Green
+
     Step '5) 工作室信息全字段读写'
     $cfgBefore = Invoke-RestMethod "$base/api/admin/config" -Headers $authHeaders
 
@@ -290,6 +328,7 @@ try {
                 direction = $target.direction; destination = $target.destination
                 email = $target.email; joinYear = $target.joinYear
                 status = $target.status; isPI = $target.isPI; bio = $target.bio; avatarUrl = $avatar
+                homepageUrl = $target.homepageUrl
             } | ConvertTo-Json -Depth 5)
     }
 
@@ -325,6 +364,26 @@ try {
     } catch {
         Write-Host '旧头像已随字段清空一并从 R2 删除' -ForegroundColor Green
     }
+
+    # 个人主页：后台写进去之后，公开接口要能读到（成员卡片用它渲染「个人主页」链接）
+    $homeBody = @{
+        name = $target.name; nameEn = $target.nameEn; title = $target.title
+        direction = $target.direction; destination = $target.destination
+        email = $target.email; homepageUrl = 'https://smoke.example.com/me'; joinYear = $target.joinYear
+        status = $target.status; isPI = $target.isPI; bio = $target.bio; avatarUrl = ''
+    } | ConvertTo-Json -Depth 5
+    Invoke-RestMethod "$base/api/admin/content/members/$($target.id)" -Method Put -Headers $authHeaders `
+        -ContentType 'application/json' -Body $homeBody | Out-Null
+    $pubHome = Invoke-RestMethod "$base/api/public/bootstrap"
+    $homeHit = @($pubHome.data.members | Where-Object { $_.homepageUrl -eq 'https://smoke.example.com/me' }).Count
+    if ($homeHit -eq 1) {
+        Write-Host '个人主页字段：写入成功且公开接口可读' -ForegroundColor Green
+    } else {
+        Write-Host "个人主页字段没写进去（公开接口命中 $homeHit，应为 1）" -ForegroundColor Red
+    }
+    # 恢复原值，别把冒烟数据留在库里
+    Invoke-RestMethod "$base/api/admin/content/members/$($target.id)" -Method Put -Headers $authHeaders `
+        -ContentType 'application/json' -Body (MemberBody '') | Out-Null
 
     Step '8b) 上传体积上限按子目录区分（头像 2MB / 轮播 50MB）'
     # 造一张 3MB 的图：文件头是合法 PNG，后面补零
