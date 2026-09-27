@@ -75,50 +75,44 @@
   **缺考与未通过初筛一律不发信**；发信失败不阻断流转。
 - 关闭本届：导出 CSV → 清库（含报名表文件、发信日志、签到凭证）→ 回到休眠；**对象存储没接通就拒绝关闭**。
   没有 Cron（`wrangler.toml` 无 `[triggers]`），缺考在「结束考试」动作里一次标完。
-- 自检：`scripts/smoke-applications.ps1`（71 项，跑前需服务在 8787；`smoke-sessions.ps1` 已删）。
+- 自检：`scripts/smoke-applications.ps1`（**80 项**，跑前需服务在 8787；`smoke-sessions.ps1` 已删）。
   **跑自检时不要把输出接到 `Select-Object -First N`** —— 上游 pwsh 会继续跑，导致两条自检互相推进状态机。
-- 旧版页面仍留在 `backup/recruit-legacy/src/admin/recruit/`（不参与编译），功能已全部搬完，可随时删。
+- **旧版页面备份已于 2026-09-27 删除**（用户确认「替换成功」后）：`backup/recruit-legacy/` 整个目录不存在了，
+  要看旧实现只能翻 git 历史 —— `git show 08fb2fd:backup/recruit-legacy/src/admin/recruit/<文件>`（见下方「已删除」一节）。
 - **状态用「阶段 + 结果」两列**，不是单列枚举：`stage` ∈ apply/written/interview/defense/onboard，
   `result` ∈ ''（待定）/attended/passed/failed/absent/declined/withdrawn。
   「是否已安排笔试/面试」不再是个人状态，而是**全局周期时间窗**；中文标签由 `applicationLabel(stage,result)` 派生、**不入库**。
   阶段只能相邻推进或退回一步（`canMoveStage`），单列枚举（旧的 14 态）已废弃。
-- 契约全在 **`shared/recruit.ts`**（阶段/结果/标签/流转/`STAGE_RESULTS`/`checkinEligibility`/周期 `RecruitCycleConfig`/
-  7 条邮件模板 `RecruitTemplates`/自动任务 `RecruitAutoTask`/CSV 列 `RECRUIT_EXPORT_COLUMNS`）；
-  **`shared/time.ts` 是北京时间工具**（`cnTimeToEpoch`/`cnTimeToText`/`cnTimeToShort`）——
-  服务器在 UTC，**绝不能** `new Date('2026-09-25T09:00')`，会差 8 小时。
+- 契约全在 **`shared/recruit.ts`**：阶段/结果/标签/流转/`STAGE_RESULTS`/`checkinEligibility`/周期 `RecruitCycleConfig`/
+  7 条邮件模板 `RecruitTemplates`/动作表 `RECRUIT_ACTION_META`/CSV 列 `RECRUIT_EXPORT_COLUMNS`
+  （`RecruitAutoTask` 一族已随自动流程一起删除）。
+  ⚠️ **`shared/time.ts` 已删除**（整届没有时间字段，北京时间工具不再需要）——
+  将来若又要处理时间：服务器在 UTC，**绝不能** `new Date('2026-09-25T09:00')`（会差 8 小时）。
 - **周期配置存 D1 `site_config['recruit']`**（刻意不放 runtime：runtime 是每个访客都会拉的公开配置，
   模板正文不该下发给所有人），无迁移。
   ⚠️ **2026-09-25 起「时间窗 / recruitPhase / site.recruitOpen」这套已整体作废** ——
   报名通道只由 `state === 'apply'` 决定（`isApplyOpen(state)`），整届状态与动作见上面「最终形态」一节。
   读 `site_config['recruit']` 时注意库里可能留着旧版本写下的键（applyStart / archives / …）：
   `mergeCycle` 现在逐字段取值并校验 `state`，不要把旧 JSON 直接铺开回显。
-- **自动流程六个任务**（`/api/admin/recruit/auto` GET 预览 → POST 执行，`worker/lib/recruit-auto.ts`）：
-  `confirm_written`（报名→笔试 + 笔试邀请）→ `mark_absent`（宽限期内未签到→absent）→
-  `advance_written`（按前 N 名/分数线 → interview + 面试邀请 / failed + 感谢信）→
-  `advance_interview`（勾选录取→defense + 面试通过通知 / 其余 failed + 感谢信）→
-  `advance_defense`（勾选通过→onboard + 邀请函 / 其余 failed + 感谢信）→ `close_cycle`。
-  后两个需要人工勾选名单，**未勾选的会被判为未通过并立刻发感谢信**，所以必须先预览。
-  只按「目标状态」决定发哪封信 → 改判（failed→passed）不会误发。
-- **Cron 兜底**（`wrangler.toml` `[triggers] crons = ["0 16 * * *"]` = 北京 0 点）→ `runRecruitScheduled()`：
-  只做「缺考标记」与「到点关闭」，需要决策的一律不自动做。
-- **关闭本届 = 先归档再清空**：未确认的记 absent → 导出 CSV 到对象存储 `applications/archives/` →
-  存档信息追加进周期的 `archives` → 删报名表文件 → 清空 `applications` 与 `application_mails` → 写 `closedAt`。
-- **签到 = 场次 + 凭证**（`migrations/0008_recruit_sessions.sql`）：`recruit_sessions` 一场一条
-  （stage/name/starts_at/ends_at/place/note/sort_order）——**开放参加制**：邀请函列出全部场次、同学现场任选一场，
-  不预排座位，也天然容纳临时来考的人；`recruit_checkin_tokens`（token 绑 `session_id` + `expires_at` + `revoked_at`，
-  同一场次可重复签发、旧码一键作废）。签到页**只有** `/checkin/<token>`（`checkinTokenPath`），**没有裸入口**。
+- ⚠️ **下面这套「自动流程 / Cron / 归档」已在 2026-09-25 整体作废**（2026-09-27 核对仓库确认）：
+  `worker/lib/recruit-auto.ts`、`/api/admin/recruit/auto`、`RecruitAutoTask` 一族、`[triggers] crons`、
+  时间窗与 `recruitPhase()`、周期的 `archives` 字段**都不存在了** —— 需决策的事（谁晋级、谁录取）
+  一律由管理员在界面上勾选后点动作，没有自动判定；`wrangler.toml` 里只留一行注释说明为什么没有 cron。
+- **签到 = 阶段 + 凭证**（`migrations/0009_recruit_no_sessions.sql` 起）：**「场次」概念整体不存在** ——
+  `recruit_sessions` 表、`applications` 的 `written/interview/defense_session_id` 三列、`admin-sessions` 路由
+  与 `RecruitSession` 一族全被删掉（0008 已作废）。`recruit_checkin_tokens` 只绑 `stage` + `expires_at` + `revoked_at`，
+  **签发新码自动作废该阶段旧码**。签到页**只有** `/checkin/<token>`（`checkinTokenPath`），**没有裸入口**。
   `checkinEligibility()` 的 `ahead` 分支保留（人在考场不能因后台没点按钮签不了）。
-  `applications` 增 `written_session_id`/`interview_session_id`/`defense_session_id`（签的哪一场，按场次统计到场）
-  与 `source`（`web` 官网提交 / `manual` 管理员补录未报名考生）。
+  `applications` 保留 `source`（`web` 官网提交 / `manual` 管理员补录未报名考生）。
   ⚠️ **`QR_SIGN_SECRET` 是 SSO applyToken 验签密钥，不是签到二维码密钥**，别复用。
-- 表 `applications` + `application_mails`（`0007_recruit_stages.sql`）+ `recruit_sessions`/`recruit_checkin_tokens`
-  （`0008_recruit_sessions.sql`；0007 重建了 applications 并映射旧枚举）。已有库都要
-  `d1 execute --file=` 单独跑，不能整体 `db:migrate`。报名表与存档都在对象存储 `applications/` 前缀（私有，
-  `GET /api/files/*` 一律 404，唯一下载口 `GET /api/admin/applications/:id/file`）。
-- 后台是**一个侧栏入口 `/admin/recruit` + 内部页签**（`src/admin/recruit/`）：
-  看板 / 周期与签到 / 报名管理 / 成绩录入 / 自动流程 / 邮件模板 / 邮件日志；
-  共用 `useRecruitSettings.ts`（**必须单独一个文件**，否则 react-refresh 规则会报错）与 `RecruitTabs.tsx`。
-- 自检 `scripts/smoke-applications.ps1`（46 项全绿，会**备份并复原**你原有的周期配置）。
+- 表 `applications` + `application_mails`（`migrations/0007_recruit_stages.sql`）+ `recruit_checkin_tokens`
+  （`migrations/0009_recruit_no_sessions.sql` 重建为只绑阶段）。**已有数据的库必须单独**
+  `wrangler d1 execute --file=migrations/000N_xxx.sql`，不能整体 `db:migrate`（会重跑建表而报错跳过）。
+  报名表与存档都在对象存储 `applications/` 前缀（私有，`GET /api/files/*` 一律 404）：
+  下载口 `GET /api/admin/applications/:id/file`，后补/替换口 `POST /api/admin/applications/:id/file`。
+- 后台是**一个侧栏入口 `/admin/recruit` + 内部四个视图**（`src/admin/recruit/`）：
+  流程（时间线 + 阶段面板）/ 名单 / 邮件日志 / 设置；共用 `useRecruitAdmin.ts` 一份状态，
+  界面常量与纯函数在 `recruit-ui.ts`（只放常量/纯函数、不放组件 —— 混在一起会踩 react-refresh 规则）。
 
 ## 邮件（SMTP）
 - 契约 `shared/mail.ts`；配置存 `site_config['runtime'].mail`。
