@@ -5,11 +5,19 @@
  * 校验、SQL、审计都由 shared/resources.ts 的元数据驱动，新增内容类型无需改这里。
  */
 
+import { adminRoleLabels } from '../../shared/identity'
 import type { SmtpConfig } from '../../shared/mail'
-import { RESOURCES, isResourceKey, validateEntity } from '../../shared/resources'
+import {
+  RESOURCES,
+  isResourceKey,
+  validateEntity,
+  type EntityValidationContext,
+  type ResourceDef,
+} from '../../shared/resources'
 import { DEFAULT_RUNTIME_CONFIG, type RuntimeConfig } from '../../shared/runtime'
 import type { SiteConfig } from '../../shared/types'
 import { invalidateRuntimeConfigCache, publicRuntimeConfig, resolveRuntimeConfig } from './config'
+import { getMemberRoles } from '../lib/identity-config'
 import { encryptMailPassword, mailPasswordSourceOf } from '../lib/mailer'
 import { clientIp, fail, ok, readJsonBody } from '../lib/http'
 import {
@@ -41,6 +49,33 @@ function actorOf(ctx: RequestContext): string {
 
 function requestMeta(ctx: RequestContext) {
   return { ip: clientIp(ctx.request), ua: ctx.request.headers.get('user-agent') ?? '' }
+}
+
+/** 该资源是否含有「取值来自运行时字典」的字段（目前只有成员的角色） */
+function usesRoleDictionary(def: ResourceDef): boolean {
+  return def.fields.some((field) => field.optionsSource === 'memberRoles')
+}
+
+/**
+ * 组装校验上下文：把**当前的方向字典**注入进来。
+ *
+ * 为什么非得在这里做：`shared/resources.ts` 里的 `options` 是模块加载时固定的兜底列表，
+ * 而方向字典是管理员随时可改的运行时数据。只有这一层知道「此刻哪些方向合法」。
+ *
+ * 编辑一条已有记录时额外并上**它原来的取值**：方向改名之后旧值已经不在字典里了，
+ * 但那条历史记录必须还能被改（否则管理员只是想把电话改一下，就会收到
+ * 「「角色」的取值不合法」—— 这正是「旧值不回写」这个语义必须配套的东西）。
+ */
+async function validationContext(
+  ctx: RequestContext,
+  def: ResourceDef,
+  before?: Entity,
+): Promise<EntityValidationContext | undefined> {
+  if (!usesRoleDictionary(def)) return undefined
+
+  const labels = adminRoleLabels(await getMemberRoles(ctx.env))
+  const existing = String(before?.title ?? '').trim()
+  return { memberRoles: existing && !labels.includes(existing) ? [...labels, existing] : labels }
 }
 
 export async function listContent(ctx: RequestContext): Promise<Response> {
@@ -75,7 +110,7 @@ export async function createContent(ctx: RequestContext): Promise<Response> {
   const body = await readJsonBody<Entity>(ctx.request)
   if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
 
-  const error = validateEntity(def, body)
+  const error = validateEntity(def, body, await validationContext(ctx, def))
   if (error) return fail(400, 'VALIDATION_FAILED', error)
 
   const created = await createEntity(ctx.env, def, body)
@@ -98,11 +133,13 @@ export async function updateContent(ctx: RequestContext): Promise<Response> {
   const body = await readJsonBody<Entity>(ctx.request)
   if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
 
-  const error = validateEntity(def, body)
-  if (error) return fail(400, 'VALIDATION_FAILED', error)
-
+  // 原记录要在校验之前取：校验「角色」这类运行时字典字段时，需要把它**原来的取值**并进白名单
+  // （方向改名后旧值已不在字典里，但这条历史记录必须还能被编辑，见 validationContext）
   const before = await getEntity(ctx.env, def, ctx.params.id)
   if (!before) return fail(404, 'NOT_FOUND', '记录不存在')
+
+  const error = validateEntity(def, body, await validationContext(ctx, def, before))
+  if (error) return fail(400, 'VALIDATION_FAILED', error)
 
   const updated = await updateEntity(ctx.env, def, ctx.params.id, body)
   if (!updated) return fail(404, 'NOT_FOUND', '记录不存在')

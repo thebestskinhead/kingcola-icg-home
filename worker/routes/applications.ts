@@ -6,6 +6,7 @@
  *   GET  /api/applications/me                  查看自己的报名进度
  *   GET  /api/applications/invite/:token       打开邀请函（凭证即密权，无需登录）
  *   POST /api/applications/invite/:token       确认加入，写入成员表
+ *   POST /api/applications/invite/:token/avatar 上传个人头像（同一张凭证，转正前必填）
  *   GET  /api/applications/checkin/:token      签到页要显示的文案（凭证 = 阶段 + 有效期）
  *   POST /api/applications/checkin/:token      扫码签到（填姓名 + 学号即可）
  *
@@ -40,7 +41,8 @@ import {
   type RecruitPublicStatus,
   type RecruitResult,
 } from '../../shared/recruit'
-import { MEMBER_ROLES, type Application } from '../../shared/types'
+import { isSelfSelectable, selfSelectableLabels } from '../../shared/identity'
+import type { Application } from '../../shared/types'
 import {
   CHECKIN_COLUMN,
   createApplication,
@@ -48,14 +50,17 @@ import {
   getApplicationByStudentId,
   toStudentView,
   updateApplication,
+  type ApplicationRecord,
 } from '../lib/applications'
 import { clientIp, fail, ok, readJsonBody } from '../lib/http'
+import { getMemberRoles } from '../lib/identity-config'
 import { getCheckinToken } from '../lib/recruit-checkin'
 import { getRecruitSettings } from '../lib/recruit-config'
 import { createEntity, getSiteConfig, writeAudit } from '../lib/repo'
 import type { RequestContext } from '../lib/router'
-import { deleteStoredFile, getStorage, storageReady } from '../lib/storage'
+import { deleteStoredFile, getStorage, resolveFileRef, storageReady } from '../lib/storage'
 import { buildObjectKey, sniffDocument } from '../lib/uploads'
+import { receiveImage } from './uploads'
 
 function identityOf(ctx: RequestContext): { studentId: string; name: string } | null {
   const student = ctx.student
@@ -294,7 +299,10 @@ export async function getInvite(ctx: RequestContext): Promise<Response> {
     return fail(410, 'INVITE_EXPIRED', '邀请链接已过期，请回复邮件联系我们重新发送')
   }
 
-  const settings = await getRecruitSettings(ctx.env)
+  const [settings, roles] = await Promise.all([
+    getRecruitSettings(ctx.env),
+    getMemberRoles(ctx.env),
+  ])
   return ok(
     {
       alreadyMember: false,
@@ -302,7 +310,9 @@ export async function getInvite(ctx: RequestContext): Promise<Response> {
       studentId: record.studentId,
       email: record.email,
       expiresAt: record.inviteExpiresAt,
-      roleOptions: MEMBER_ROLES,
+      // 只下发**学生可自选**的方向：指导老师这类组织授予的身份不在这一份里，
+      // 所以邀请函的下拉框里根本不会出现它（后端还会独立再校验一次，见 confirmInvite）
+      roleOptions: selfSelectableLabels(roles),
       joinYear: String(new Date().getFullYear()),
       cycleName: settings.cycle.name,
     },
@@ -316,6 +326,23 @@ interface ConfirmInviteBody {
   direction?: string
   bio?: string
   email?: string
+  homepageUrl?: string
+  /** 个人头像地址：先经 `POST .../invite/:token/avatar` 上传换来 */
+  avatarUrl?: string
+}
+
+/**
+ * 邀请函必须处于「待确认」才可用。
+ * 查看 / 上传头像 / 确认加入三个入口共用这一份判断，免得规则改动时漏掉一处。返回 null 表示可用。
+ */
+function pendingInviteError(record: ApplicationRecord): Response | null {
+  if (record.stage !== 'onboard' || record.result !== '') {
+    return fail(409, 'INVITE_NOT_ACTIVE', '这份邀请函当前不可用，请联系工作室确认')
+  }
+  if (!isInviteUsable(record.inviteExpiresAt, record.stage, record.result)) {
+    return fail(410, 'INVITE_EXPIRED', '邀请链接已过期，请回复邮件联系我们重新发送')
+  }
+  return null
 }
 
 export async function confirmInvite(ctx: RequestContext): Promise<Response> {
@@ -325,19 +352,20 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
   if (record.stage === 'onboard' && record.result === 'passed') {
     return fail(409, 'ALREADY_MEMBER', '你已确认加入，无需重复提交')
   }
-  if (record.stage !== 'onboard' || record.result !== '') {
-    return fail(409, 'INVITE_NOT_ACTIVE', '这份邀请函当前不可用，请联系工作室确认')
-  }
-  if (!isInviteUsable(record.inviteExpiresAt, record.stage, record.result)) {
-    return fail(410, 'INVITE_EXPIRED', '邀请链接已过期，请回复邮件联系我们重新发送')
-  }
+  const unavailable = pendingInviteError(record)
+  if (unavailable) return unavailable
 
   const body = await readJsonBody<ConfirmInviteBody>(ctx.request)
   if (!body) return fail(400, 'INVALID_BODY', '请求体必须是 JSON')
 
   const title = String(body.title ?? '').trim()
   if (!title) return fail(400, 'VALIDATION_FAILED', '请选择你在工作室的方向')
-  if (!(MEMBER_ROLES as readonly string[]).includes(title)) {
+
+  // 唯一判据是「此刻是否允许学生自助选择」—— 身份是组织授予的，不能由本人自己填。
+  // 前端的下拉已经过滤过一次，这里是**独立**的第二道闸：即使有人绕过页面直接调接口，
+  // 也不可能把自己写成「指导老师」（这正是成员身份管理最初被报出来的问题）。
+  const roles = await getMemberRoles(ctx.env)
+  if (!isSelfSelectable(roles, title)) {
     return fail(400, 'VALIDATION_FAILED', `方向取值不合法：${title}`)
   }
 
@@ -346,6 +374,17 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
   const direction = String(body.direction ?? '').trim()
   if (!direction) {
     return fail(400, 'VALIDATION_FAILED', '请填写你的负责方向（会显示在成员卡片上）')
+  }
+
+  // 头像是转正的必填项（用户要求「在邀请链接中要求其上传个人头像」）。
+  // 只接受**本站 avatars/ 下签发过的地址**，不收任意外链 —— 成员卡片是公开渲染的。
+  const avatarUrl = String(body.avatarUrl ?? '').trim()
+  if (!avatarUrl) {
+    return fail(400, 'VALIDATION_FAILED', '请上传个人头像（会显示在成员卡片上）')
+  }
+  const avatarRef = await resolveFileRef(ctx.env, avatarUrl)
+  if (!avatarRef || avatarRef.purpose !== 'site' || !avatarRef.key.startsWith('avatars/')) {
+    return fail(400, 'VALIDATION_FAILED', '头像地址无效，请重新上传')
   }
 
   const email = String(body.email ?? '').trim() || record.email
@@ -361,11 +400,12 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
     direction,
     destination: '',
     email,
+    homepageUrl: String(body.homepageUrl ?? '').trim(),
     joinYear: String(now.getFullYear()),
     status: 'current',
     isPI: false,
     bio: String(body.bio ?? '').trim(),
-    avatarUrl: '',
+    avatarUrl,
     sortOrder: 0,
   })
 
@@ -390,6 +430,42 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
     memberId: String(member.id),
     application: updated ? toStudentView(updated) : null,
   })
+}
+
+/**
+ * 邀请函本人上传头像（`POST /api/applications/invite/:token/avatar`）。
+ *
+ * 为什么单开一口：`/api/admin/uploads` 要管理员会话，而转正页是「凭证即密权、不要求登录」的
+ * —— 同学的教务网会话很可能早就过期了，不该因为要传头像就卡住转正。
+ * 这里用邀请函 token 鉴权，且**固定写进 avatars/**（不信任请求里的 scope），
+ * 体积与魔数校验与后台头像完全共用 `receiveImage()`。
+ */
+export async function uploadInviteAvatar(ctx: RequestContext): Promise<Response> {
+  const record = await getApplicationByInviteToken(ctx.env, ctx.params.token)
+  if (!record) return fail(404, 'INVITE_NOT_FOUND', '邀请链接无效，请确认是否复制完整')
+
+  if (record.stage === 'onboard' && record.result === 'passed') {
+    return fail(409, 'ALREADY_MEMBER', '你已确认加入，无需重复提交')
+  }
+  const unavailable = pendingInviteError(record)
+  if (unavailable) return unavailable
+
+  const stored = await receiveImage(ctx, () => 'avatars')
+  if (stored instanceof Response) return stored
+
+  await writeAudit(ctx.env, {
+    actor: `student:${record.studentId}`,
+    action: 'upload',
+    resource: stored.scope,
+    targetId: stored.key,
+    detail: `邀请函头像 ${stored.contentType} ${(stored.size / 1024).toFixed(1)}KB`,
+    ...requestMeta(ctx),
+  })
+
+  return ok(
+    { key: stored.key, url: stored.url, size: stored.size, contentType: stored.contentType },
+    { status: 201 },
+  )
 }
 
 // ===== 扫码签到（凭证即密权：token 只绑阶段 + 带失效时间） =====

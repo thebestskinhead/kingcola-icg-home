@@ -2,7 +2,12 @@ import { useState } from 'react'
 import { MemberAvatar } from '@/components/brand'
 import type { Member, MemberStatus } from '@/types'
 import { cn } from '@/lib/utils'
-import { Mail } from 'lucide-react'
+import { Globe, Mail } from 'lucide-react'
+
+/** 主页链接可能没带协议（同学常写 github.com/xxx），补上 https:// 免得被当成站内相对路径 */
+function homeHref(url: string): string {
+  return /^https?:\/\//i.test(url) ? url : `https://${url}`
+}
 
 /** 年份分界线：两侧细线，中间大年份数字 */
 function YearDivider({ year }: { year: string }) {
@@ -48,6 +53,16 @@ function MemberCard({ member }: { member: Member }) {
           className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-accent"
         >
           <Mail className="h-3 w-3" /> {member.email}
+        </a>
+      )}
+      {member.homepageUrl && (
+        <a
+          href={homeHref(member.homepageUrl)}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-accent"
+        >
+          <Globe className="h-3 w-3" /> 个人主页
         </a>
       )}
     </div>
@@ -113,6 +128,16 @@ export function MembersSection({ members }: { members: Member[] }) {
               {pi.email && (
                 <a href={`mailto:${pi.email}`} className="inline-flex items-center gap-1.5 hover:text-accent">
                   <Mail className="h-3.5 w-3.5" /> {pi.email}
+                </a>
+              )}
+              {pi.homepageUrl && (
+                <a
+                  href={homeHref(pi.homepageUrl)}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1.5 hover:text-accent"
+                >
+                  <Globe className="h-3.5 w-3.5" /> 个人主页
                 </a>
               )}
             </div>

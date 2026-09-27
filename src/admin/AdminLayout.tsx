@@ -15,6 +15,7 @@ import {
   LogOut,
   Newspaper,
   Settings,
+  Shapes,
   Users,
 } from 'lucide-react'
 
@@ -87,6 +88,8 @@ export function AdminLayout({
               label={RESOURCES[key].label}
             />
           ))}
+          {/* 方向字典：给「团队成员」的角色字段提供选项，也决定邀请函里学生能选什么 */}
+          <NavItem to="/admin/roles" icon={<Shapes className="h-4 w-4" />} label="方向与身份" />
 
           <div className="mt-3 px-3 pb-1 text-[11px] tracking-[0.2em] text-muted-foreground">系统</div>
           <NavItem to="/admin/storage" icon={<Database className="h-4 w-4" />} label="对象存储" />
@@ -152,6 +155,9 @@ export function AdminLayout({
               {RESOURCES[key].label}
             </NavLink>
           ))}
+          <NavLink to="/admin/roles" className="whitespace-nowrap rounded-full px-3 py-1 text-xs text-foreground/70">
+            方向与身份
+          </NavLink>
           <NavLink to="/admin/storage" className="whitespace-nowrap rounded-full px-3 py-1 text-xs text-foreground/70">
             对象存储
           </NavLink>

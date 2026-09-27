@@ -47,7 +47,14 @@ import {
   type FieldDef,
   type ResourceDef,
 } from '@shared/resources'
-import { adminDeleteContent, adminCreateContent, adminUpdateContent, adminListContent } from '@/api/endpoints'
+import {
+  adminDeleteContent,
+  adminCreateContent,
+  adminUpdateContent,
+  adminListContent,
+  adminMemberRoles,
+} from '@/api/endpoints'
+import { adminRoleLabels } from '@shared/identity'
 import { ApiError } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
@@ -187,10 +194,59 @@ export function ContentPage() {
   const [search, setSearch] = useState('')
   const [draft, setDraft] = useState<Entity | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
+  /** 正在编辑的那条记录的原值；校验「角色」时要把它并进白名单（见下面的 resolvedFields） */
+  const [original, setOriginal] = useState<Entity | null>(null)
   const [deleting, setDeleting] = useState<Entity | null>(null)
   const [saving, setSaving] = useState(false)
+  /** 运行时方向字典里可用的方向名（进页时拉一次） */
+  const [roleLabels, setRoleLabels] = useState<string[]>([])
 
   const listFields = useMemo(() => (def ? def.fields.filter((f) => f.inList) : []), [def])
+
+  /** 本资源是否用到了「取值来自运行时字典」的字段（目前只有成员的角色） */
+  const usesRoleDictionary = useMemo(
+    () => Boolean(def?.fields.some((field) => field.optionsSource === 'memberRoles')),
+    [def],
+  )
+
+  useEffect(() => {
+    if (!usesRoleDictionary) return
+    let active = true
+    adminMemberRoles()
+      .then((result) => {
+        // 未停用的方向（含"允许学生自选"与否 —— 后台不受那条限制，它只约束邀请函）
+        if (active) setRoleLabels(adminRoleLabels(result.roles))
+      })
+      .catch(() => {
+        // 拉不到就退回 shared/resources.ts 里写死的兜底选项，不阻断内容管理
+      })
+    return () => {
+      active = false
+    }
+  }, [usesRoleDictionary])
+
+  /**
+   * 解析 select 字段此刻的可选值。
+   *
+   * 「角色」来自运行时字典，而字典是可以被改名的，所以这里要把**这条记录原来的取值**
+   * 一并列出来（标注「历史值」）—— 与 Worker 侧 validateEntity 的 ctx 完全同一套规则：
+   * 新建只能用当前列表里的方向，编辑时额外允许保留它原本的那个值。
+   * 否则会出现「管理员只想改个电话，却被要求先改掉角色」。
+   */
+  const resolvedFields = useMemo(() => {
+    if (!def) return []
+    const current = original ? String(original.title ?? '').trim() : ''
+    const options = current && !roleLabels.includes(current) ? [...roleLabels, current] : roleLabels
+
+    return def.fields.map((field) => {
+      if (field.optionsSource !== 'memberRoles') return field
+      const optionLabels: Record<string, string> = { ...field.optionLabels }
+      for (const option of options) {
+        if (!roleLabels.includes(option)) optionLabels[option] = `${option}（历史值，不在当前列表）`
+      }
+      return { ...field, options, optionLabels }
+    })
+  }, [def, original, roleLabels])
 
   const load = useCallback(async () => {
     if (!def) return
@@ -214,11 +270,14 @@ export function ContentPage() {
 
   const openCreate = () => {
     setEditingId(null)
+    setOriginal(null)
     setDraft(defaultEntity(def))
   }
 
   const openEdit = (entity: Entity) => {
     setEditingId(String(entity.id))
+    // 记下原值：角色下拉要把它列进去（方向改名后旧值已不在字典里，但必须还能被保留）
+    setOriginal(entity)
     const next: Entity = {}
     for (const field of def.fields) {
       const value = entity[field.key]
@@ -244,7 +303,13 @@ export function ContentPage() {
     // 提交前先跑一遍与 Worker 完全相同的校验（同一个 validateEntity）：
     // 「新增 / 编辑」时所有必填字段（含按 status 切换的负责方向 / 毕业去向）都必须已填写，
     // 本地先拦一次，免得白跑一趟接口才拿到 400。
-    const invalid = validateEntity(def, payload)
+    // 方向字典字段要把当前选项一并传进去 —— Worker 侧注入的是同一份规则（见 admin-content.ts）。
+    const roleField = resolvedFields.find((field) => field.optionsSource === 'memberRoles')
+    const invalid = validateEntity(
+      def,
+      payload,
+      roleField ? { memberRoles: roleField.options } : undefined,
+    )
     if (invalid) {
       toast.error(invalid)
       return
@@ -378,7 +443,7 @@ export function ContentPage() {
 
           {draft && (
             <div className="grid gap-4 py-2">
-              {def.fields
+              {resolvedFields
                 // showWhen：按另一个字段的取值决定是否显示（如「在组」只填负责方向、轮播的图片只在图片版显示）
                 .filter((field) => isFieldActive(field, draft))
                 .map((field) => (

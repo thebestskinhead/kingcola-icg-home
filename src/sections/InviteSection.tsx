@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,10 +11,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { confirmInvite, fetchInvite, type InviteInfo } from '@/api/endpoints'
+import { MemberAvatar } from '@/components/brand'
+import { confirmInvite, fetchInvite, inviteUploadAvatar, type InviteInfo } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
+import { formatLimit, uploadImageLimit } from '@shared/resources'
 import { PAGE_PATHS, type SiteConfig } from '@/types'
-import { CheckCircle2, Loader2, PartyPopper } from 'lucide-react'
+import { CheckCircle2, ImagePlus, Loader2, PartyPopper } from 'lucide-react'
 import { toast } from 'sonner'
 
 type Phase = 'loading' | 'ready' | 'already' | 'error' | 'done'
@@ -40,7 +42,32 @@ export function InviteSection({ site }: { site: SiteConfig }) {
   const [direction, setDirection] = useState('')
   const [bio, setBio] = useState('')
   const [email, setEmail] = useState('')
+  const [homepageUrl, setHomepageUrl] = useState('')
+  const [avatarUrl, setAvatarUrl] = useState('')
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const avatarInputRef = useRef<HTMLInputElement>(null)
+  // 上限与 Worker 校验同源（头像 2MB），前端先拦一道省得白传一趟
+  const avatarLimit = uploadImageLimit('avatars')
+
+  const pickAvatar = async (file: File | null | undefined) => {
+    if (!file) return
+    if (file.size > avatarLimit) {
+      toast.error(`头像不能超过 ${formatLimit(avatarLimit)}`)
+      return
+    }
+    setUploadingAvatar(true)
+    try {
+      const result = await inviteUploadAvatar(token, file)
+      setAvatarUrl(result.url)
+      toast.success('头像已上传')
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : '头像上传失败，请重试')
+    } finally {
+      setUploadingAvatar(false)
+      if (avatarInputRef.current) avatarInputRef.current.value = ''
+    }
+  }
 
   const load = useCallback(async () => {
     setPhase('loading')
@@ -61,6 +88,7 @@ export function InviteSection({ site }: { site: SiteConfig }) {
   }, [load])
 
   const submit = async () => {
+    if (!avatarUrl) return toast.error('请先上传个人头像')
     if (!title) return toast.error('请选择你在工作室的方向')
     if (!direction.trim()) return toast.error('请填写你在工作室的负责方向')
 
@@ -72,6 +100,8 @@ export function InviteSection({ site }: { site: SiteConfig }) {
         direction: direction.trim(),
         bio: bio.trim(),
         email: email.trim(),
+        homepageUrl: homepageUrl.trim(),
+        avatarUrl,
       })
       setPhase('done')
       toast.success('已确认加入，欢迎加入工作室！')
@@ -136,7 +166,7 @@ export function InviteSection({ site }: { site: SiteConfig }) {
         <PartyPopper className="mx-auto h-10 w-10 text-accent" />
         <h1 className="mt-4 font-display text-2xl font-bold">欢迎加入 {site.studioName}</h1>
         <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-          成员档案已建立。等头像与简介补充完整，你就会出现在官网「团队成员」页面。
+          成员档案已建立，头像也收到了 —— 你现在就出现在官网「团队成员」页面。
         </p>
         <Link
           to={PAGE_PATHS.members}
@@ -153,11 +183,52 @@ export function InviteSection({ site }: { site: SiteConfig }) {
       <p className="text-xs tracking-[0.2em] text-muted-foreground">{site.studioNameEn}</p>
       <h1 className="mt-3 font-display text-3xl font-bold">填写成员信息，确认加入</h1>
       <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-        {info?.name} 同学（{info?.studentId}），恭喜你通过全部考核！请补齐下面的成员档案信息，
-        确认后我们会立刻为你开通成员身份。
+        {info?.name} 同学（{info?.studentId}），恭喜你通过全部考核！
+        请补齐下面的成员档案信息（<strong className="font-medium text-foreground">头像必传</strong>
+        ，会直接显示在官网成员卡片上），确认后我们会立刻为你开通成员身份。
       </p>
 
       <div className="mt-8 grid gap-4">
+        <div className="grid gap-1.5">
+          <Label>个人头像 *</Label>
+          <div className="flex items-center gap-4">
+            <MemberAvatar
+              name={info?.name ?? ''}
+              seed={info?.studentId ?? token}
+              src={avatarUrl}
+              size="lg"
+            />
+            <div className="grid gap-2">
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/gif,image/webp"
+                className="hidden"
+                onChange={(e) => void pickAvatar(e.target.files?.[0])}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                disabled={uploadingAvatar}
+                onClick={() => avatarInputRef.current?.click()}
+              >
+                {uploadingAvatar ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ImagePlus className="h-3.5 w-3.5" />
+                )}
+                {uploadingAvatar ? '上传中…' : avatarUrl ? '更换头像' : '选择头像'}
+              </Button>
+              <p className="text-[11px] text-muted-foreground">
+                建议正方形（1:1），JPG / PNG / WebP / GIF，不超过 {formatLimit(avatarLimit)}
+                ；会显示在官网「团队成员」页
+              </p>
+            </div>
+          </div>
+        </div>
+
         <div className="grid gap-1.5">
           <Label>方向 / 角色 *</Label>
           <Select value={title} onValueChange={setTitle}>
@@ -195,6 +266,18 @@ export function InviteSection({ site }: { site: SiteConfig }) {
           <Label>邮箱</Label>
           <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
           <p className="text-[11px] text-muted-foreground">默认用你报名时填的邮箱，可在此修正</p>
+        </div>
+
+        <div className="grid gap-1.5">
+          <Label>个人主页</Label>
+          <Input
+            value={homepageUrl}
+            onChange={(e) => setHomepageUrl(e.target.value)}
+            placeholder="github.com/your-name 或 https://blog.example.com"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            博客 / GitHub / 作品集，可留空；填了会显示在你的成员卡片上
+          </p>
         </div>
 
         <div className="grid gap-1.5">

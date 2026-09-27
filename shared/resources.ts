@@ -7,8 +7,9 @@
  * 新增一个内容类型只需要在这里加一条，无需改路由与页面。
  */
 
+import { DEFAULT_MEMBER_ROLES } from './identity'
 import type { ResourceKey } from './types'
-import { MEMBER_ROLES, NEWS_CATEGORIES, PAGE_KEYS, PAGE_LABELS, SLIDE_TYPES } from './types'
+import { NEWS_CATEGORIES, PAGE_KEYS, PAGE_LABELS, SLIDE_TYPES } from './types'
 
 export type FieldType =
   | 'text'
@@ -53,6 +54,15 @@ export interface FieldDef {
   type: FieldType
   required?: boolean
   options?: readonly string[]
+  /**
+   * 取值来自**运行时目录**而不是本文件写死的 options（目前只有成员「角色」，来自方向字典）。
+   *
+   * 为什么要留这么一个口子：方向列表是可以被管理员随时增删改的（存 KV，见 shared/identity.ts），
+   * 而 `RESOURCES` 是模块加载时就固定的常量对象 —— 它只能是**兜底**。
+   * 真实的合法取值由调用方通过 `validateEntity(def, input, ctx)` 的 `ctx.memberRoles` 注入；
+   * 后台表单也走同一个 `resolveOptions()` 拿当前选项，两边口径不会跑偏。
+   */
+  optionsSource?: 'memberRoles'
   /** select 选项在后台的显示名（取值仍是 options 里的英文标识） */
   optionLabels?: Record<string, string>
   placeholder?: string
@@ -115,7 +125,7 @@ export const RESOURCES: Record<ResourceKey, ResourceDef> = {
         preview: 'circle',
         hint: `建议正方形（1:1），JPG / PNG / WebP / GIF，不超过 ${formatLimit(
           uploadImageLimit('avatars'),
-        )}。留空则自动使用姓名首字占位头像。`,
+        )}。留空则自动使用姓名首字占位头像（正式邀请函转正时要求本人必须上传）。`,
         defaultValue: '',
       },
       {
@@ -123,10 +133,16 @@ export const RESOURCES: Record<ResourceKey, ResourceDef> = {
         column: 'title',
         label: '角色',
         type: 'select',
-        options: MEMBER_ROLES,
+        // 取值来自后台可维护的「方向与身份」字典；这里的 options 只是没有配置时的兜底。
+        // 该字段存的是**方向名本身**（中文），改名不会回写历史记录 —— 原因见 shared/identity.ts 文件头。
+        optionsSource: 'memberRoles',
+        options: DEFAULT_MEMBER_ROLES.map((role) => role.label),
         required: true,
         inList: true,
-        defaultValue: '前端开发',
+        // 刻意不设 defaultValue：默认值写死某个方向名，一旦它被改名/停用，
+        // 新增表单就会带着一个非法值开局。留空 + 必填，让管理员每次显式选一次。
+        defaultValue: '',
+        hint: '在「内容管理 → 方向与身份」里维护；改了名单不会影响已保存的成员（他们保留原方向名）',
       },
       {
         key: 'direction',
@@ -152,6 +168,15 @@ export const RESOURCES: Record<ResourceKey, ResourceDef> = {
         defaultValue: '',
       },
       { key: 'email', column: 'email', label: '邮箱', type: 'text', inList: true, placeholder: 'name@example.edu.cn' },
+      {
+        key: 'homepageUrl',
+        column: 'homepage_url',
+        label: '个人主页',
+        type: 'text',
+        placeholder: '如：github.com/xxx 或 https://blog.example.com',
+        hint: '个人博客 / GitHub / 作品集，留空则成员卡片上不显示（转正时本人可在邀请函里自己填）',
+        defaultValue: '',
+      },
       { key: 'joinYear', column: 'join_year', label: '加入年份', type: 'text', required: true, inList: true, compact: true, placeholder: '2026' },
       {
         key: 'status',
@@ -457,10 +482,43 @@ export function isFieldActive(field: FieldDef, input: Record<string, unknown>): 
   return true
 }
 
+/**
+ * 校验时由调用方补充的运行时信息。
+ *
+ * 目前只有一项：运行时字典的取值。之所以要注入而不是写死在 FieldDef 里，
+ * 是因为字典本身是可以被后台随时改的（见 FieldDef.optionsSource）。
+ */
+export interface EntityValidationContext {
+  /**
+   * `optionsSource: 'memberRoles'` 字段此刻的合法取值。
+   *
+   * ⚠️ 更新一条已有记录时，调用方应当**把该记录原来的取值也并进来**：
+   * 方向改名后旧值已经不在字典里了，但那条历史记录本身必须还能被编辑
+   * （否则管理员只是改个电话号码，就会撞上「取值不合法」）。
+   */
+  memberRoles?: readonly string[]
+}
+
+/**
+ * 解析一个 select 字段此刻的合法取值。
+ * 后台表单渲染下拉与 Worker 校验共用它，避免「界面能选但后端拒绝」。
+ */
+export function resolveOptions(
+  field: FieldDef,
+  ctx?: EntityValidationContext,
+): readonly string[] | undefined {
+  if (field.optionsSource === 'memberRoles') {
+    // 注入了就用注入的（运行时字典），否则退回兜底 options（没配 KV 时的默认列表）
+    return ctx?.memberRoles?.length ? ctx.memberRoles : field.options
+  }
+  return field.options
+}
+
 /** 校验并规范化一份提交数据；返回 null 表示通过 */
 export function validateEntity(
   def: ResourceDef,
   input: Record<string, unknown>,
+  ctx?: EntityValidationContext,
 ): string | null {
   for (const field of def.fields) {
     if (field.key === 'id') continue
@@ -472,10 +530,12 @@ export function validateEntity(
     }
   }
   for (const field of def.fields) {
-    if (field.type !== 'select' || !field.options) continue
+    if (field.type !== 'select') continue
+    const options = resolveOptions(field, ctx)
+    if (!options) continue
     const value = input[field.key]
     if (value === undefined || value === '') continue
-    if (!field.options.includes(String(value))) {
+    if (!options.includes(String(value))) {
       return `「${field.label}」的取值不合法：${String(value)}`
     }
   }

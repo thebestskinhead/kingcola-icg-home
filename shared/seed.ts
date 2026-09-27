@@ -46,8 +46,8 @@ export const seedSlides: Slide[] = [
 ]
 
 /** 种子里允许省略的字段：读库时它们一定存在（见 `worker/lib/repo.ts` 的整行读写口径） */
-type SeedMember = Omit<Member, 'avatarUrl' | 'destination' | 'sortOrder'> &
-  Partial<Pick<Member, 'avatarUrl' | 'destination' | 'sortOrder'>>
+type SeedMember = Omit<Member, 'avatarUrl' | 'destination' | 'homepageUrl' | 'sortOrder'> &
+  Partial<Pick<Member, 'avatarUrl' | 'destination' | 'homepageUrl' | 'sortOrder'>>
 
 const rawSeedMembers: SeedMember[] = [
   {
@@ -171,11 +171,12 @@ const rawSeedMembers: SeedMember[] = [
   },
 ]
 
-/** 补齐头像 / 毕业去向 / 排序权重，让种子成员的形状与 D1 读出来的记录完全一致 */
+/** 补齐头像 / 毕业去向 / 个人主页 / 排序权重，让种子成员的形状与 D1 读出来的记录完全一致 */
 export const seedMembers: Member[] = rawSeedMembers.map(
-  ({ avatarUrl, destination, sortOrder, ...rest }) => ({
+  ({ avatarUrl, destination, homepageUrl, sortOrder, ...rest }) => ({
     avatarUrl: avatarUrl ?? '',
     destination: destination ?? '',
+    homepageUrl: homepageUrl ?? '',
     sortOrder: sortOrder ?? 0,
     ...rest,
   }),

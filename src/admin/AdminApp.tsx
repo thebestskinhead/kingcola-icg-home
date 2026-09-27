@@ -6,6 +6,7 @@ import { AdminLayout } from './AdminLayout'
 import { LoginPage } from './LoginPage'
 import { Dashboard } from './Dashboard'
 import { ContentPage } from './ContentPage'
+import { MemberRolesPage } from './MemberRolesPage'
 import { AuditPage } from './AuditPage'
 import { SettingsPage } from './SettingsPage'
 import { RecruitPage } from './recruit/RecruitPage'
@@ -61,6 +62,9 @@ export function AdminApp() {
               内部四个视图：流程 / 名单 / 邮件日志 / 设置。 */}
           <Route path="recruit" element={<RecruitPage />} />
           <Route path="content/:resource" element={<ContentPage />} />
+          {/* 方向字典不是「一条条记录」，所以不进 /admin/content/:resource（那套是按主键表的 CRUD），
+              单独一个页面：整表编辑 + 一次保存 */}
+          <Route path="roles" element={<MemberRolesPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="storage" element={<StoragePage />} />
           <Route path="settings" element={<SettingsPage identity={identity} />} />

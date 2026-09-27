@@ -51,6 +51,7 @@ import {
   runRecruitActionRoute,
   updateRecruitSettings,
 } from './routes/admin-recruit'
+import { getMemberRolesAdmin, updateMemberRolesAdmin } from './routes/admin-roles'
 import {
   checkin,
   confirmInvite,
@@ -59,6 +60,7 @@ import {
   getRecruitStatus,
   myApplication,
   submitApplication,
+  uploadInviteAvatar,
 } from './routes/applications'
 import { getRuntimeConfig } from './routes/config'
 import { sendTestMail } from './routes/mail'
@@ -100,6 +102,8 @@ const routes: RouteDef[] = [
   // 邀请函：凭证即密权，不要求登录（会话过期了也能确认加入）
   { method: 'GET', path: '/api/applications/invite/:token', handler: getInvite },
   { method: 'POST', path: '/api/applications/invite/:token', handler: confirmInvite },
+  // 转正页要传头像，但不能要求登录（同学的教务网会话往往已过期）—— 用邀请函 token 当凭证
+  { method: 'POST', path: '/api/applications/invite/:token/avatar', handler: uploadInviteAvatar },
   // 扫码签到：凭证（token）即密权 —— 只绑阶段 + 带失效时间，所以不需要登录态，
   // 也没有裸入口（导航里不出现，直接访问无 token 的路径拿不到任何信息）。
   { method: 'GET', path: '/api/applications/checkin/:token', handler: getCheckinInfo },
@@ -171,6 +175,12 @@ const routes: RouteDef[] = [
   { method: 'GET', path: '/api/admin/content/:resource/:id', handler: getContent, auth: 'admin' },
   { method: 'PUT', path: '/api/admin/content/:resource/:id', handler: updateContent, auth: 'admin' },
   { method: 'DELETE', path: '/api/admin/content/:resource/:id', handler: deleteContent, auth: 'admin' },
+
+  // ---- 后台：成员「方向 / 角色」字典（存 KV + D1，见 lib/identity-config.ts） ----
+  // 不是内容类型之一：它不是「一条条记录」，而是一份整读整写的配置 —— 所以走自己的接口，
+  // 也不放进 shared/resources.ts 的 RESOURCES（那套是给有主键的表用的）。
+  { method: 'GET', path: '/api/admin/member-roles', handler: getMemberRolesAdmin, auth: 'admin' },
+  { method: 'PUT', path: '/api/admin/member-roles', handler: updateMemberRolesAdmin, auth: 'admin' },
 ]
 
 async function handle(request: Request, env: Env, exec: ExecutionContext): Promise<Response> {

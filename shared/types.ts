@@ -18,6 +18,8 @@ export interface Member {
   /** 毕业去向（status=alumni 时必填） */
   destination: string
   email: string
+  /** 个人主页链接（博客 / GitHub / 作品集）；为空时成员卡片上不显示 */
+  homepageUrl: string
   joinYear: string
   status: MemberStatus
   isPI: boolean
@@ -155,15 +157,10 @@ export type ResourceKey = 'members' | 'projects' | 'news' | 'slides'
 
 // ===== 枚举常量（前后端共用） =====
 
-export const MEMBER_ROLES = [
-  '指导老师',
-  '前端开发',
-  '后端开发',
-  '算法工程师',
-  '移动端开发',
-  'UI 设计',
-  '产品运营',
-] as const
+// 成员「方向 / 角色」原来是一份写死的常量（MEMBER_ROLES），现已改成后台可维护的数据字典，
+// 见 `shared/identity.ts`（契约 + 默认值 + 只读纯函数）与 `worker/lib/identity-config.ts`（存储）。
+// 之所以搬走：那份列表里混着「指导老师」这类**组织授予**的身份，而邀请函转正是学生自助填写的，
+// 两者必须用同一份契约但**不同的可见范围**，字符串常量表达不了这个边界。
 
 export const NEWS_CATEGORIES = ['通知公告', '团队活动', '竞赛获奖'] as const
 

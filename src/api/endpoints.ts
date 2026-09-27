@@ -21,6 +21,7 @@ import type {
   RecruitStats,
   RecruitTemplates,
 } from '@shared/recruit'
+import type { MemberRole } from '@shared/identity'
 import type { ApplyTokenPayload, SsoMeResponse } from '@shared/sso'
 import type { RuntimeConfig } from '@shared/runtime'
 import type {
@@ -156,6 +157,35 @@ export function adminDeleteContent(resource: ResourceKey, id: string) {
   return apiRequest<{ id: string }>(
     `/api/admin/content/${resource}/${encodeURIComponent(id)}`,
     jsonInit('DELETE'),
+  )
+}
+
+// ===== 后台：成员「方向 / 角色」字典 =====
+
+export interface MemberRolesResponse {
+  roles: MemberRole[]
+  /** 每个方向当前有多少成员在用（删除前提示的依据） */
+  usage: Record<string, number>
+  /** KV 是否已绑定；未绑定时读写走 D1，功能不受影响 */
+  kvReady: boolean
+  /** 本次保存移除了哪些「还有人在用」的方向 */
+  droppedInUse?: string[]
+}
+
+export function adminMemberRoles() {
+  return apiRequest<MemberRolesResponse>('/api/admin/member-roles')
+}
+
+/**
+ * 整份覆盖保存方向字典（存储形态是「一个 JSON 数组」，所以没有逐条接口，见 admin-roles.ts）。
+ *
+ * 移除还有成员在用的方向时，后端会先返回 409 `ROLE_IN_USE` 要求确认，
+ * 界面上确认过之后再带 `confirmRemoval = true` 重发。
+ */
+export function adminUpdateMemberRoles(roles: MemberRole[], confirmRemoval = false) {
+  return apiRequest<MemberRolesResponse>(
+    '/api/admin/member-roles',
+    jsonInit('PUT', { roles, confirmRemoval }),
   )
 }
 
@@ -307,12 +337,31 @@ export interface ConfirmInviteBody {
   direction?: string
   bio?: string
   email?: string
+  /** 个人主页（博客 / GitHub / 作品集），可留空 */
+  homepageUrl?: string
+  /** 个人头像地址：先经 `inviteUploadAvatar()` 上传换来，必填 */
+  avatarUrl: string
 }
 
 export function confirmInvite(token: string, body: ConfirmInviteBody) {
   return apiRequest<{ memberId: string }>(
     `/api/applications/invite/${encodeURIComponent(token)}`,
     jsonInit('POST', body),
+  )
+}
+
+/**
+ * 邀请函本人上传头像。
+ * 与 `adminUploadImage` 的唯一差别是「凭证」：这里用邀请函 token，不需要管理员会话
+ * —— 同学打开转正页时，教务网会话往往早就过期了。不要手动设置 content-type。
+ */
+export function inviteUploadAvatar(token: string, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return apiRequest<UploadResult>(
+    `/api/applications/invite/${encodeURIComponent(token)}/avatar`,
+    { method: 'POST', body: form },
+    { timeoutMs: 60_000 },
   )
 }
 
