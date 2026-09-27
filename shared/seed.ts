@@ -45,7 +45,11 @@ export const seedSlides: Slide[] = [
   },
 ]
 
-export const seedMembers: Member[] = [
+/** 种子里允许省略的字段：读库时它们一定存在（见 `worker/lib/repo.ts` 的整行读写口径） */
+type SeedMember = Omit<Member, 'avatarUrl' | 'destination' | 'sortOrder'> &
+  Partial<Pick<Member, 'avatarUrl' | 'destination' | 'sortOrder'>>
+
+const rawSeedMembers: SeedMember[] = [
   {
     id: 'pi-1',
     name: '陈默',
@@ -166,6 +170,16 @@ export const seedMembers: Member[] = [
     sortOrder: 21,
   },
 ]
+
+/** 补齐头像 / 毕业去向 / 排序权重，让种子成员的形状与 D1 读出来的记录完全一致 */
+export const seedMembers: Member[] = rawSeedMembers.map(
+  ({ avatarUrl, destination, sortOrder, ...rest }) => ({
+    avatarUrl: avatarUrl ?? '',
+    destination: destination ?? '',
+    sortOrder: sortOrder ?? 0,
+    ...rest,
+  }),
+)
 
 /** 项目主键由数据库自增，种子数据不带 id */
 export const seedProjects: Omit<Project, 'id'>[] = [

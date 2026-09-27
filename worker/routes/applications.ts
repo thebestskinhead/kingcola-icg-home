@@ -341,6 +341,13 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
     return fail(400, 'VALIDATION_FAILED', `方向取值不合法：${title}`)
   }
 
+  // 「负责方向」对在组成员是必填项（与 shared/resources.ts 的 requiredWhen 同一条规则）：
+  // 转正时就要求填上，保证写出来的成员记录里没有空的必填字段。
+  const direction = String(body.direction ?? '').trim()
+  if (!direction) {
+    return fail(400, 'VALIDATION_FAILED', '请填写你的负责方向（会显示在成员卡片上）')
+  }
+
   const email = String(body.email ?? '').trim() || record.email
   const now = new Date()
 
@@ -351,7 +358,7 @@ export async function confirmInvite(ctx: RequestContext): Promise<Response> {
     name: record.name,
     nameEn: String(body.nameEn ?? '').trim(),
     title,
-    direction: String(body.direction ?? '').trim(),
+    direction,
     destination: '',
     email,
     joinYear: String(now.getFullYear()),

@@ -101,7 +101,9 @@ export async function createEntity(env: Env, def: ResourceDef, input: Entity): P
     .bind(id, ...columns.map((c) => row[c]), now, now)
     .run()
 
-  return { id, ...input }
+  // 回读整行再返回：新增接口的返回值要和后续「读」的完全同形（字段一个不少）。
+  // 不能直接返回 input —— 那样补上的默认值与时间戳都看不到，读写两端形状会不一致。
+  return (await getEntity(env, def, id)) ?? { id, ...input }
 }
 
 export async function updateEntity(

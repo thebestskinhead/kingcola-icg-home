@@ -62,6 +62,7 @@ export function InviteSection({ site }: { site: SiteConfig }) {
 
   const submit = async () => {
     if (!title) return toast.error('请选择你在工作室的方向')
+    if (!direction.trim()) return toast.error('请填写你在工作室的负责方向')
 
     setSubmitting(true)
     try {
@@ -180,12 +181,13 @@ export function InviteSection({ site }: { site: SiteConfig }) {
             <Input value={nameEn} onChange={(e) => setNameEn(e.target.value)} placeholder="San Zhang" />
           </div>
           <div className="grid gap-1.5">
-            <Label>负责方向</Label>
+            <Label>负责方向 *</Label>
             <Input
               value={direction}
               onChange={(e) => setDirection(e.target.value)}
               placeholder="如：Web 前端 · 可视化"
             />
+            <p className="text-[11px] text-muted-foreground">会显示在成员卡片的角色下方</p>
           </div>
         </div>
 

@@ -13,18 +13,18 @@ export interface Member {
   name: string
   nameEn: string
   title: string
-  /** 在组期间的负责方向 */
+  /** 在组期间的负责方向（status=current 时必填） */
   direction: string
-  /** 毕业去向（已毕业成员填写） */
-  destination?: string
+  /** 毕业去向（status=alumni 时必填） */
+  destination: string
   email: string
   joinYear: string
   status: MemberStatus
   isPI: boolean
   bio: string
   /** 头像地址，形如 /api/files/avatars/xxx.jpg；为空时前台用姓名首字占位头像 */
-  avatarUrl?: string
-  sortOrder?: number
+  avatarUrl: string
+  sortOrder: number
 }
 
 export interface NewsItem {
@@ -112,7 +112,7 @@ export interface Application {
   /** web = 同学自己在官网提交；manual = 未报名但现场来考，管理员手工补录 */
   source: ApplicationSource
 
-  // ---- 签到（每个阶段各自记录；同一阶段只有一场，所以不需要场次字段） ----
+  // ---- 签到（每个阶段各自记录；场次概念已整体取消，见 migrations/0009） ----
   writtenCheckinAt: string
   interviewCheckinAt: string
   defenseCheckinAt: string
@@ -220,8 +220,8 @@ export function invitePath(token: string): string {
 
 export interface SiteConfig {
   // ---- 招新 ----
-  // 刻意没有「招新总开关」：招新模式由招新周期自动派生（报名时间窗内 + 尚未确认笔试名单），
-  // 管理员只需要在后台「招新 → 准备」里填好时间，不需要惦记开关。
+  // 刻意没有「招新总开关」：报名通道开不开只由整届状态决定（`state === 'apply'`，
+  // 见 shared/recruit.ts 的 `isApplyOpen()`），管理员点「开启报名 / 结束报名」即生效。
   recruitTitle: string
   recruitDesc: string
 
