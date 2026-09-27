@@ -335,13 +335,19 @@ export function JoinSection({ site }: { site: SiteConfig }) {
                     ? '提交前需通过学校教务网完成身份认证。登录状态保留 30 天，期间无需重复验证。'
                     : '本次报名通道已经关闭，不能再提交新的报名表。已经报过名的同学登录后可以继续查看自己的进度 —— 材料审核结果与后续安排都在那里。'}
                 </p>
-                <Button className="mt-6 gap-2" onClick={signIn}>
-                  <QrCode className="h-4 w-4" />
-                  {applyOpen ? '使用教务网账号登录' : '扫码登录，查看我的进度'}
-                </Button>
-                <p className="mt-3 text-xs text-muted-foreground">
-                  将跳转到教务网认证页面，用微信扫码并在手机上确认后自动返回本页
-                </p>
+                {/* 报名中 → 登录为了提交；报名已结束 → 登录为了查进度。
+                    还没开招（休眠 / 备招）就不给按钮了 —— 那时登录也没有东西可看。 */}
+                {(applyOpen || gate === 'closed') && (
+                  <>
+                    <Button className="mt-6 gap-2" onClick={signIn}>
+                      <QrCode className="h-4 w-4" />
+                      {applyOpen ? '使用教务网账号登录' : '扫码登录，查看我的进度'}
+                    </Button>
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      将跳转到教务网认证页面，用微信扫码并在手机上确认后自动返回本页
+                    </p>
+                  </>
+                )}
               </div>
             )
           ) : application && !reupload ? (
