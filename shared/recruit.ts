@@ -1101,6 +1101,25 @@ export const RECRUIT_CYCLE_VARIABLES: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * 本届配置 → 模板变量名（worker 发信与后台预览**共用这一份**）。
+ *
+ * 为什么非得有它：本届配置里存的键是短名（`written` / `interview` / `probation` / `formal`），
+ * 而模板里写的是 `{writtenGroup}` …，两者**对不上号**。
+ * 直接 `...cycle.groups` 铺进变量表，会把明明配好的群号显示成「还没配置」——
+ * 预览与变量清单都骗人，只有真发出去的信是对的（发信侧一直是显式映射）。
+ * 收敛成一个函数之后，两边不可能再各写一套。
+ */
+export function cycleMailVars(cycle: RecruitCycleConfig): Record<string, string> {
+  return {
+    cycleName: cycle.name,
+    writtenGroup: cycle.groups.written,
+    interviewGroup: cycle.groups.interview,
+    probationGroup: cycle.groups.probation,
+    formalGroup: cycle.groups.formal,
+  }
+}
+
+/**
  * 变量替换。三种情况刻意分开：
  *
  * 1. **未知变量**（多半是打错字）原样保留；

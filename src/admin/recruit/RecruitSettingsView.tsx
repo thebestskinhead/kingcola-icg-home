@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils'
 import { AlertTriangle, Loader2, Save } from 'lucide-react'
 import { toast } from 'sonner'
 import {
+  cycleMailVars,
   RECRUIT_MAIL_KINDS,
   RECRUIT_MAIL_META,
   RECRUIT_MAIL_VARIABLES,
@@ -43,6 +44,7 @@ function variableValue(token: string, vars: Record<string, string>): { text: str
   const key = token.slice(1, -1)
   if (key === 'name' || key === 'studentId') return { text: '逐人不同（按收信人渲染）', ready: true }
   if (key === 'inviteLink') return { text: '逐人签发，仅正式邀请函有值', ready: true }
+  if (key === 'rejectReason') return { text: '驳回时由管理员逐次填写', ready: true }
   const value = (vars[key] ?? '').trim()
   return value ? { text: value, ready: true } : { text: '还没配置（发送时保持原文）', ready: false }
 }
@@ -87,13 +89,17 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
    * 预览数据：只有「逐人不同」的姓名、学号与邀请链接用示例值；
    * 本届名称与四个群号**读本届的实际值**（在流程页改） —— 没填就保持 `{writtenGroup}` 原样
    * （`renderTemplate` 对未配置的招新变量不做替换），一眼能看出还差哪些没配。
+   *
+   * ⚠️ 本届变量必须走 `cycleMailVars()`：配置里是短名（`written`），模板里是 `{writtenGroup}`，
+   * 直接铺 `...admin.cycle.groups` 会让**配好的群号也显示成「还没配置」**（发信侧却是好的）。
    */
   const previewVars: Record<string, string> = {
     name: '张同学',
     studentId: '2026001',
-    cycleName: admin.cycle.name,
-    ...admin.cycle.groups,
+    ...cycleMailVars(admin.cycle),
     inviteLink: `${window.location.origin}/invite/abc123`,
+    // 驳回理由本来就是「由管理员逐次填写」的，给个示例比显示「还没配置」有用
+    rejectReason: '报名表缺成绩单页，请补齐后重新上传。',
     studio: site?.studioName ?? '',
     contactEmail: site?.contactEmail ?? '',
     contactAddress: site?.contactAddress ?? '',

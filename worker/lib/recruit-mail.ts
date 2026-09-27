@@ -12,6 +12,7 @@
 
 import type { RecruitMailKind } from '../../shared/recruit'
 import {
+  cycleMailVars,
   RECRUIT_MAIL_META,
   renderTemplate,
   type RecruitCycleConfig,
@@ -51,11 +52,8 @@ export function buildNoticeVars(record: ApplicationRecord, ctx: NoticeContext): 
   return {
     name: record.name || '同学',
     studentId: record.studentId,
-    cycleName: cycle.name,
-    writtenGroup: cycle.groups.written,
-    interviewGroup: cycle.groups.interview,
-    probationGroup: cycle.groups.probation,
-    formalGroup: cycle.groups.formal,
+    // 本届名称与四个群号走共享映射（后台预览读的是同一个函数，见 shared/recruit.ts 的 cycleMailVars）
+    ...cycleMailVars(cycle),
     inviteLink: record.inviteToken ? buildInviteUrl(ctx.origin, record.inviteToken) : '',
     // 驳回理由：只在「材料驳回通知」里有值（其它信里会渲染成空串，见 renderTemplate 的规则）
     rejectReason: record.materialReason,

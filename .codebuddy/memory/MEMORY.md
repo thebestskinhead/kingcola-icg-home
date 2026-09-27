@@ -77,7 +77,12 @@
 - **`reset_apply`（后台「强制结束报名并清空数据」）**：只在 `apply` / `apply_review` 可用，删光报名记录 + 这些人的报名表文件（跳过 `RECRUIT_ARCHIVE_SCOPE` 归档 CSV，别误删往届存档）+ 发信日志，`state` 退回 **`prepare`（备招）**，名称与群号保留、可立刻重开报名。**刻意不导出存档、也不因存储不可用而拒绝**（与 `close_cycle` 的区别见 `docs/HANDOVER.md` §6.9）；响应带 `cleaned{applications, files, filesFailed}`，后台 toast 如实报数。
 - **邀请函转正**：`POST /api/applications/invite/:token`（凭证即密权，14 天有效、只能确认一次）→ 写 `members` 并把 `memberId` 记回 `applications`。
 - **表与文件**：`applications` + `application_mails`（`0007_recruit_stages.sql`）+ `recruit_checkin_tokens`（`0009` 重建为只绑阶段）。**已有数据的库必须单独** `wrangler d1 execute --file=migrations/000N_xxx.sql`，不能整体 `db:migrate`。报名表与存档都在对象存储 `applications/` 前缀（私有，`GET /api/files/*` 一律 404）：下载口 `GET /api/admin/applications/:id/file`，后补/替换口 `POST /api/admin/applications/:id/file`。
-- **自检**：`scripts/smoke-applications.ps1`（**101 项**，跑前需服务在 8787）。**别把输出接到 `Select-Object -First N`** —— 上游 pwsh 会继续跑，导致两条自检互相推进状态机。
+- **自检**：`scripts/smoke-applications.ps1`（**103 项**，跑前需服务在 8787）。**别把输出接到 `Select-Object -First N`** —— 上游 pwsh 会继续跑，导致两条自检互相推进状态机。
+- ⚠️ **本届变量的键名陷阱**：`RecruitCycleConfig.groups` 存的是**短名**（`written` / `interview` / `probation` / `formal`），
+  而模板里的令牌是 `{writtenGroup}` / `{interviewGroup}` / …，**两套名字对不上**。
+  统一走 `shared/recruit.ts` 的 **`cycleMailVars(cycle)`**（worker 发信与后台预览共用）；
+  曾因后台预览直接 `...admin.cycle.groups` 铺开，把明明配好的群号显示成「还没配置（发送时保持原文）」，
+  而真发出去的信一直是对的 —— 这类「预览骗人」最难查，凡是模板变量都别手写键名。
 
 ## 邮件（SMTP）
 - 契约 `shared/mail.ts`；配置存 `site_config['runtime'].mail`。

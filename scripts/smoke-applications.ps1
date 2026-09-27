@@ -341,6 +341,11 @@ try {
     $logsWithToken = (Api 'GET' '/api/admin/recruit/mails' $null $jar).data.logs
     Check '未配置的招新变量保持原文（不替换成空白）' (($logsWithToken | Where-Object { $_.subject -like '*{writtenGroup}*' }).Count -ge 1) (($logsWithToken | Select-Object -First 1).subject)
     $null = Api 'PUT' '/api/admin/recruit' @{ cycle = @{ groups = @{ written = '710000001'; interview = '710000002'; probation = '710000003'; formal = '710000004' } } } $jar
+    # 群号配好之后，真发出去的信里必须是**号码**而不是原样的 {writtenGroup}
+    # （后台预览一度把「已配好」显示成「还没配置」，就是因为变量键名与模板令牌不是同一套）
+    $null = Api 'POST' '/api/admin/applications/notify' @{ ids = @($appIds['a']); subject = '【变量渲染】{writtenGroup}'; body = '正文 {cycleName}' } $jar
+    $renderLogs = @((Api 'GET' '/api/admin/recruit/mails' $null $jar).data.logs | Where-Object { $_.subject -like '*变量渲染*' })
+    Check '本届变量被渲染成实际群号（不是原样保留）' ($renderLogs.Count -ge 1 -and $renderLogs[0].subject -match '710000001') $renderLogs[0].subject
     $withdrawn = (Api 'POST' '/api/admin/applications/bulk' @{ ids = @($appIds['b']); action = 'withdraw' } $jar).data
     Check '批量标记退出报名' ($withdrawn.moved -eq 1) $withdrawn.moved
     $resent = (Api 'PUT' "/api/admin/applications/$($appIds['b'])" @{ notice = 'thanks_written' } $jar).data
