@@ -29,8 +29,10 @@ run_worker_first = ["/api/*"]
 # 首次部署前执行：
 #   npx wrangler d1 create kingcola-db
 # 然后把返回的 database_id 填到下面
+# ⚠️ 别留空：留空会被当成「请帮我自动创建资源」，wrangler 会另建一套带 Worker 名前缀的库
 # ---------------------------------------------------------------------------
 [[d1_databases]]
+# 绑定别名 DB → 库名 kingcola-db（预设名字见 README「部署」一节）
 binding = "DB"
 database_name = "kingcola-db"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
@@ -38,13 +40,16 @@ database_id = "REPLACE_WITH_D1_DATABASE_ID"
 # ---------------------------------------------------------------------------
 # KV：运行时配置缓存 / 会话白名单（可选，缺失时自动降级为直读 D1）
 #   npx wrangler kv namespace create CONFIG_KV
+# 然后把返回的 id 填到下面（别留空，同 D1）
 # ---------------------------------------------------------------------------
 [[kv_namespaces]]
+# 绑定别名与命名空间名同名：CONFIG_KV
 binding = "CONFIG_KV"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
 # ---------------------------------------------------------------------------
-# R2：文件存储（默认绑定 FILES；站点图片与报名表两个业务目标都指向它，
+# R2：文件存储（**按桶名绑定，没有 ID 要填**；桶建好、名字对上即可）。
+# 默认绑定别名 FILES（预设桶名 kingcola-files，见 README「部署」；站点图片与报名表两个业务目标都指向它，
 #       可在后台「对象存储」页改为任意 S3 兼容存储，或追加新绑定后按名选择）：
 #   npx wrangler r2 bucket create kingcola-files
 # ---------------------------------------------------------------------------

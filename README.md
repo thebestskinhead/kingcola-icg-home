@@ -98,19 +98,72 @@ pwsh -NoProfile -File scripts/probe-local.ps1  # 页面：前台与后台深层�
 
 ## 部署
 
+### 1. 自己创建云资源（本仓库**不会**自动创建任何资源）
+
+下面这些名字是**项目预设的**，照着建就行 —— 不改名字就不需要动任何代码。
+
+| 资源 | 创建时用的名字 | 代码里的绑定别名 | 值写在哪 |
+|---|---|---|---|
+| D1 数据库 | `kingcola-db` | `DB` | `wrangler.toml` → `[[d1_databases]]` 的 `database_id` |
+| KV 命名空间 | `CONFIG_KV` | `CONFIG_KV` | `wrangler.toml` → `[[kv_namespaces]]` 的 `id` |
+| R2 存储桶 | `kingcola-files` | `FILES` | `wrangler.toml` → `[[r2_buckets]]` 的 `bucket_name`（**按名字绑定，没有 ID 要填**） |
+
 ```bash
-npx wrangler d1 create kingcola-db           # 把 database_id 填进 wrangler.toml
-npx wrangler kv namespace create CONFIG_KV   # 把 id 填进 wrangler.toml
+npx wrangler d1 create kingcola-db           # 输出里的 database_id → 填进 wrangler.toml
+npx wrangler kv namespace create CONFIG_KV   # 输出里的 id → 填进 wrangler.toml
+npx wrangler r2 bucket create kingcola-files # 不需要 ID，桶名对上即可
+```
+
+> ⚠️ **绑定以 `wrangler.toml` 为准**：别只在 Cloudflare 面板的 Bindings 里手动绑定 ——
+> 下次 `wrangler deploy` 会按配置文件整体覆盖绑定，面板里多出来的会消失。
+> （`keep_vars` 只能保住环境**变量**；绑定的 `keep_bindings` 在 wrangler 4.x 里并不存在。）
+>
+> ⚠️ **不要图省事把 `database_id` / `id` 留空** —— 留空会被当作「请帮我自动创建资源」而新建一套
+> 带 Worker 名前缀的资源；仓库里的 `REPLACE_WITH_...` 占位符会在部署时报错，这是刻意的防呆。
+
+### 2. 建表
+
+```bash
 npm run db:migrate:remote
+```
 
-npx wrangler secret put SESSION_SECRET            # 管理员会话
-npx wrangler secret put STUDENT_SESSION_SECRET    # 报名学生会话（与上面各自独立）
-npx wrangler secret put RECOVERY_TOKEN
-npx wrangler secret put QR_SIGN_SECRET            # 校验授权服务器签发的身份凭证
-npx wrangler secret put SSO_CLIENT_SECRET         # 与授权服务器约定的客户端密钥
+### 3. 写入密钥（名字同样是预设的，共 6 个）
 
+| 名称 | 用途 |
+|---|---|
+| `SESSION_SECRET` | 管理员会话签名 |
+| `STUDENT_SESSION_SECRET` | 报名学生会话签名（与管理员各自独立） |
+| `RECOVERY_TOKEN` | 初始化管理员 / 重置密码的灾备口令 |
+| `QR_SIGN_SECRET` | 校验授权服务器签发的身份凭证（**须与其 `APPLY_TOKEN_SECRET` 一致**） |
+| `SSO_CLIENT_SECRET` | 向授权服务器换取身份的客户端凭据（**须与其同名变量一致**） |
+| `SMTP_PASSWORD` | 邮件通知的 SMTP 密码 / 授权码（未启用邮件可不填） |
+
+```bash
+npx wrangler secret put SESSION_SECRET            # 其余五个同理，逐个执行
+```
+
+本地开发用同名变量放在 `.dev.vars`（已 gitignore）。
+
+### 4. 构建并部署
+
+```bash
 npm run deploy
 ```
+
+### 5. 初始化管理员（线上只需一次）
+
+```bash
+curl -X POST https://<你的域名>/api/admin/bootstrap \
+  -H 'content-type: application/json' \
+  -d '{"token":"<RECOVERY_TOKEN>","username":"admin","password":"<至少 8 位>","seedContent":true}'
+```
+
+> **也可以连 Git 自动部署**（Cloudflare 面板 → Worker → Settings → Builds → Connect）：
+> Build command 填 `npm run build`，Deploy command 保持默认 `npx wrangler deploy`。
+> 两点注意：① 构建镜像默认 Node 24，建议加一个构建变量 `NODE_VERSION=22` 钉住；
+> ② **数据库迁移不会自动跑**，上面第 2 步仍要手动执行。
+> 另外 `[env.preview]` 里没有重写绑定（wrangler 的绑定**不会**从顶层继承到具名环境），
+> 要开预览构建得先给它补上 D1/KV/R2。
 
 完整步骤与交接事项见 [`docs/HANDOVER.md`](docs/HANDOVER.md)。
 
@@ -118,7 +171,7 @@ npm run deploy
 
 | 命令 | 说明 |
 |---|---|
-| `npm run dev` | 前端开发服务器（3000） |
+| `npm run dev` | 前端开发服务器（5175，见上方端口说明） |
 | `npm run dev:api` | Worker 本地运行（8787） |
 | `npm run build` | 类型检查 + 构建前端 |
 | `npm run deploy` | 构建并部署到 Cloudflare |
