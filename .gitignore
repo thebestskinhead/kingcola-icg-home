@@ -30,6 +30,11 @@ dist-ssr
 .dev.vars.*
 *.log
 
+# 本地环境变量台账（真实密钥，绝不入库）；需要模板就提交 .env.example
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
