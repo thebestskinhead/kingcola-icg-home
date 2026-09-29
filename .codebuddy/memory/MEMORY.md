@@ -42,6 +42,14 @@
   等于让每个 clone 的人去挂别人的域名 → zone 归属不符直接部署失败。绑法：面板 Domains & Routes 加一次，或 `npm run deploy -- --domains <域名>`。
   实测：配置里不声明 `[[routes]]` 时 `wrangler deploy` 打印 `No targets deployed`，但**不会摘掉面板挂的域名**（部署后 `kingcola.002038.xyz` 仍 200）。
   ⚠️ 与**绑定**的处置相反：绑定以配置文件为准、面板里多出来的会被覆盖清掉；域名不会被清。
+- **建表脚本 = `scripts/migrate.mjs`（跨平台 Node，2026-09-29 取代 `migrate.ps1`）**：`npm run db:migrate:local|remote`
+  在任何平台都能跑（含 Workers Builds 的 Ubuntu 镜像）—— 旧的 `pwsh` 版让非 Windows 的人连建表都做不了，等于无法部署。
+  带 `_migrations` 台账（name / applied_at）：执行过的文件**直接跳过、不碰库**，重复运行安全；
+  老库（台账之前建的）首次跑会提示先 `node scripts/migrate.mjs <local|remote> --adopt` 登记一次（只写台账、不执行 SQL）。
+  本地与线上库 2026-09-29 都已登记 12 个文件。
+  ⚠️ 坑：`spawnSync('npx', [...], { shell: true })` 下，`--command "SELECT ... "` 里的**空格会被 shell 拆成多个参数** →
+  命令静默失败 → 脚本误判「库是空的」→ 曾在线上跑起 `0001`（万幸它全是 `CREATE TABLE IF NOT EXISTS`，无数据损失）。
+  修法：直接 `node node_modules/wrangler/bin/wrangler.js`（不过 shell）＋ 探测失败时**中止**而不是继续跑迁移。
 - **部署入口 `node scripts/ci-deploy.mjs`**（`npm run deploy` 与 Workers Builds 的 Deploy command 都用它）：先 `wrangler r2 bucket list` 探测 R2，能用就原样部署，**不能用就临时剔掉 `[[r2_buckets]]` 再部署**（自动降级）。`FORCE_NO_R2=1` 强制降级、`--dry-run` 演练。⚠️ 因此 `wrangler.toml` 的 `[[r2_buckets]]` 绝不能手动删（`wrangler dev` 靠它模拟本地 R2 桶，本地开发与 smoke 8a/8b 都依赖）。
 - ⚠️⚠️ **PBKDF2 迭代数受 Workers CPU 预算硬约束**：本项目账号是免费版，`worker/lib/crypto.ts` 原 150 000 次 → 线上必挂（登录/初始化返 `500 服务异常`，纯读接口全正常，极易误判成数据库/绑定问题）。实测 4 万/6 万/10 万通过、**15 万必挂** → 已改成 **50 000** 并部署验证。**已存哈希自带迭代数**，改常量不会让旧密码失效；旧哈希若本身超预算仍 500，用 bootstrap 重置一次即可。想恢复 60 万次：先升级 Workers Paid。
 - ⚠️ **`wrangler secret put` 千万别用管道喂值**（会把换行一起存进去，之后怎么手输都对不上 —— 本项目踩过「恢复口令不正确」）。脚本化写密钥用 **`wrangler secret bulk secrets.json`**。排查技巧：bootstrap **先验口令、后验密码**，可用「真口令 + 1 位密码」非破坏性校验（`400 WEAK_PASSWORD`=口令对，`403 INVALID_TOKEN`=口令错，都不建号）。
