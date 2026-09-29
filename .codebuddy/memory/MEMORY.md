@@ -6,7 +6,13 @@
 ## 定位与架构
 学生工作室官网 + 内部后台：Vite React（`src/`）+ Cloudflare Workers（`worker/`，`run_worker_first = ["/api/*"]`）。前台只读，写操作收敛到 `/admin/*`。
 - **`shared/` 是前后端唯一契约源**：types / resources / identity / qr（冻结）/ runtime / mail / recruit / sso / site / seed / storage。
-- **`shared/resources.ts` 一份元数据同时驱动 Worker 的 SQL·校验与后台的表格·表单**：`type`(text/textarea/select/switch/number/date/tags/image)、`required`、`showWhen`/`requiredWhen`、`optionsSource`、`optionLabels`、`preview`、`inList`/`compact`、`hint`、`autoId`、`defaultValue`。新增内容类型只加一条。
+- **`shared/resources.ts` 一份元数据同时驱动 Worker 的 SQL·校验与后台的表格·表单**：`type`(text/textarea/select/switch/number/date/tags/image)、`required`、`showWhen`/`requiredWhen`、`optionsSource`、`optionLabels`、`preview`、`inList`/`compact`、`hint`、`autoId`、`defaultValue`，以及**列表层**的 `groups`（按某 select 字段拆页签，成员=在组/已毕业）与 `bulk`（勾选后的批量动作）。新增内容类型只加一条。
+- **后台内容页只有一份 `ContentPage`**：`def.groups` 拆页签时，**列集合跟着页签走**（复用 `showWhen`：`isFieldActive(field, { [groups.key]: 当前页签 })`）→「在组」里根本看不到「毕业去向」；新增时用 `prefillOnCreate` 预置分组字段。跨记录的批量动作**不走通用 CRUD**，见 `worker/routes/admin-members.ts`（`POST /api/admin/members/graduate` 幂等（只把状态改成 alumni）、`POST /api/admin/members/destination-mail`）。
+- **批量动作分两类**（`ResourceBulkDef`）：① 简单动作（`confirmTitle`/`confirmNote`，需先勾人；如「发送去向征集」）走通用确认框；
+  ② `wizard: true` 的动作走专属两步向导 —— 目前只有「**到了说再见的时候了**」（`src/admin/GraduateWizard.tsx`，文案是用户定的）：
+  `preselect: 'latest-group'` 让它**不用先勾人**（动作条一直显示），进去自动勾好**最晚一届**的在组成员并可改，
+  第二步回显「送走几位 · 哪几届（按加入年份）」+ 是否寄信，主按钮文案随勾选变化（「寄出这封信，祝他们前程似锦」/「就到这儿，送他们毕业」），
+  成功后才切到第三步结果屏。⚠️ 向导是**成员专用**组件，里面直接用了 `status/joinYear/name/title/email` 这些字段名。
 - **读写口径**：读 `columnList(def)` 全列（`rowToEntity` 只映射 `def.fields`，**不含 createdAt/updatedAt**）；创建 = `defaultEntity` 补默认值后整行 INSERT 并回读整行；更新只写提交上来的列；校验唯一口径 `validateEntity(def, input, ctx)`；互斥字段用 `requiredWhen` + `showWhen` 同条件。
 - **主键两制**：默认文本主键 `randomId`；`projects` 用 `autoId:true` 自增整数（查库前 `normalizeId()`）。
 - **前台是真实路由**：`PAGE_PATHS` 在 shared/types.ts；新增板块改四处（PageKey → LABELS/PATHS → App.tsx Routes → Header NAV_ORDER）。
@@ -35,7 +41,7 @@
 - **状态 = `stage` + `result` 两列**：stage ∈ apply/written/interview/defense/onboard；result ∈ ''(待定)/attended/passed/failed/absent/declined/withdrawn；中文标签由 `applicationLabel()` 派生、**不入库**；阶段只相邻推进或退一步。**整届没有时间字段、也没有场次**；所有动作集中在 `RECRUIT_ACTION_META`（from/to/needsSelection/文案），后台按钮文案与可点性同源（不会「界面能点但后端拒绝」）。缺考在「结束笔试/面试/答辩」里一次标完。服务器在 UTC，**绝不能** `new Date('2026-09-25T09:00')`（差 8 小时）。
 - ⚠️ **已作废、别再引入**：`recruit-auto.ts`、`/api/admin/recruit/auto`、`[triggers] crons`、`recruitPhase()`/时间窗/`site.recruitOpen`、周期的 `archives`、`shared/time.ts`、`recruit_sessions`。
 - 周期配置存 D1 `site_config['recruit']`（刻意不放 runtime：模板正文不该下发给访客）；读时 `mergeCycle` 逐字段取值并校验 state。报名通道只由 `isApplyOpen(state)` 决定。
-- **邮件八模板**，变量仅 `{name}{studentId}{cycleName}{writtenGroup}{interviewGroup}{probationGroup}{formalGroup}{inviteLink}{rejectReason}{studio}{contactEmail}{contactAddress}`；**缺考与未过初筛一律不发信**；发信失败不阻断流转；只按目标状态决定发哪封 → 改判不会误发。⚠️ 群号短名（`groups.written`）≠ 模板令牌（`{writtenGroup}`），统一走 `cycleMailVars(cycle)`；**模板变量别手写键名**（曾出过「预览骗人」）。
+- **邮件九模板**（招新的八条 + `graduation_destination`「毕业去向征集」—— 后者收件人是**成员**、由成员管理里的「批量毕业」发出，**暂寄居在招新模板页**，用户计划之后把模板管理整体迁出）：变量仅 `{name}{studentId}{cycleName}{writtenGroup}{interviewGroup}{probationGroup}{formalGroup}{inviteLink}{destinationLink}{rejectReason}{studio}{contactEmail}{contactAddress}`；**缺考与未过初筛一律不发信**；发信失败不阻断流转；只按目标状态决定发哪封 → 改判不会误发。⚠️ 群号短名（`groups.written`）≠ 模板令牌（`{writtenGroup}`），统一走 `cycleMailVars(cycle)`；**模板变量别手写键名**（曾出过「预览骗人」）。⚠️ 「可补发」清单是 `RECRUIT_APPLICATION_MAIL_KINDS`（= 全部模板 − 毕业去向征集），名单的下拉与 `isApplicationNoticeKind()` 都用它，别再直接用 `RECRUIT_MAIL_KINDS`。
 - **材料审核**（`0010`）：`applications` 加 `material_status`(''待审/approved/rejected)+`material_reason`+`material_reviewed_at`；报名阶段可逐个/批量「通过·驳回」（驳回必写理由并**自动逐人发信**）；**重传材料自动回到待审核**；只在 apply/apply_review 可审；**未过审不能被勾进笔试**（`MATERIAL_NOT_APPROVED`，只作用于报名→笔试）。
 - **报名截止后的进度入口**：`gate=closed` 时未登录者看到「报名已截止」+「扫码登录，查看我的进度」；登录后可见审核状态与驳回理由，报名未结束可直接重传（`POST /api/applications?replace=true`，**`replace` 只认 query 参数**）。
 - **签到 = 阶段 + 凭证**：`recruit_checkin_tokens` 只绑 `stage`(written/interview/defense)+`expires_at`+`revoked_at`，**签发新码自动作废该阶段旧码**；签到页只有 `/checkin/<token>`。⚠️ `QR_SIGN_SECRET` 是 SSO applyToken 验签密钥，**不是**签到码密钥。
@@ -43,6 +49,13 @@
 - **`reset_apply`**：只在 apply/apply_review 可用；删光报名记录+报名表+发信日志（**跳过 `RECRUIT_ARCHIVE_SCOPE`**，别误删往届存档），state 退回 `prepare`；**不导出存档、不因存储不可用拒绝**；返回 `cleaned{applications,files,filesFailed}`。
 - **邀请函转正** `POST /api/applications/invite/:token`（凭证即密权，14 天、只能确认一次）→ 写 `members` 并回记 `memberId`；**头像必传**（`/invite/:token/avatar`，同一凭证、免登录），确认时只接受本站 `avatars/` 前缀（拒任意外链）；「负责方向」必填；三个入口共用 `pendingInviteError()`。
 - **上传公共实现** `worker/routes/uploads.ts: receiveImage(ctx, resolveScope)`（multipart → 体积 → 魔数 → 落站点存储，**不含鉴权**）；管理员口读表单 `scope`，邀请函**硬编码 `avatars`**。
+- **毕业去向填写页**（`/graduate/:token`，凭证即密权、免登录）：成员管理「批量毕业」或「发送去向征集」时签发 `members.destination_token`（**签发即覆盖旧的**；提交后清空 → 一条只能用一次；**没有过期时间**，因为可能几个月后才回填）。页面：`src/sections/GraduateSection.tsx`；接口 `GET|POST /api/members/destination/:token`（`worker/routes/members.ts` + `lib/member-destination.ts`），**裸 SQL**，因为 token 绝不能进 `shared/resources.ts` 的字段表（那会让公开 bootstrap 把它下发出去）。
+  ⚠️ 因此 `destination` 也**不再是 `requiredWhen`**：它是异步由本人填的，强制必填会让管理员连改头像都被挡住。
+- ⚠️ **没有「毕业年份」字段**（用户 2026-09-29 明确：「不需要设置毕业年份，使用加入年份即可」）：
+  届别就是**加入年份**（`joinYear`），别再引入 `graduation_year` / `Member.graduationYear` / 向导里的年份输入。
+  `POST /api/admin/members/graduate` 只把 `status` 改成 `alumni`（幂等，无 `year` 参数）；
+  界面上「哪一届」全由 `joinYear` 分组与回显（向导第一步按加入年份分届、第二步回显选中的那几届）。
+  曾短暂加过 `0013_member_graduation_year.sql` + `year` 入参，**当天已整体撤回**（迁移文件删除、本地列 DROP）。
 - **表/文件**：`applications` + `application_mails` + `recruit_checkin_tokens`；**已有数据的库必须单独**执行新迁移 SQL。报名表与存档都在 `applications/` 前缀（私有）；下载 `GET /api/admin/applications/:id/file`，后补/替换 `POST .../:id/file`。
 - 自检 `scripts/smoke-applications.ps1`（**109 项**，需 8787）。**别把输出接到 `Select-Object -First N`**（上游 pwsh 会继续跑，两条自检互相推进状态机）。⚠️ 该脚本从「关闭本届」跑到底 → **会归档并清空本地报名数据**。
 
@@ -61,7 +74,7 @@
   **刻意存中文名、不做稳定 id**：改名单只影响之后新增的记录，历史值原样保留、不回写 → 删改方向零迁移（`members.title` 自 0001 起是 TEXT）；代价是没法一键统一改历史叫法。
   **边界**：非学生方向**永不允许** `selectableBySelf`（validate 强制纠正）；邀请函只下发 `selfSelectableLabels()`，`confirmInvite` 再独立校验 → 学生写不成「指导老师」。
   字段侧 `optionsSource:'memberRoles'`（`options` 只是兜底，白名单由 `validateEntity(def, input, ctx.memberRoles)` 注入）；**更新记录时必须把原值并进白名单**（`admin-content.ts: validationContext()` 与 `ContentPage.tsx: resolvedFields` 必须同规则），否则改名后老记录连电话都改不了。
-- 成员卡片：`direction`=负责方向（在组必填）、`destination`=毕业去向（已毕业必填）；卡片取 `destination || direction` 兜底；头像为空用姓名首字；`homepageUrl` 非空时显示「点击进入个人主页」（`homeHref()` 补 `https://`）。
+- 成员卡片：`direction`=负责方向（在组必填 `requiredWhen`）、`destination`=毕业去向（**不设必填**，由本人异步填，可为空）；卡片取 `destination || direction` 兜底；头像为空用姓名首字；`homepageUrl` 非空时显示「点击进入个人主页」（`homeHref()` 补 `https://`）。
 - 上传：`POST /api/admin/uploads`（魔数嗅探）；`UPLOAD_IMAGE_LIMITS`（avatars 2MB / slides 50MB / 默认 2MB）。
 - 项目页 `ProjectsSection`：按年份分组、`sm:grid-cols-2`；卡片 `flex flex-col` + 描述 `flex-1`（grid 默认 stretch → 同行等高、底部对齐，**别改成 `items-start`**，否则展开时同行会长短不一）。荣誉仍是**单个字符串** `honor`（数据侧不改，后台提示「；」分隔），前端 `splitHonors` 拆成逐条 + `divide-y` 隔断，**超过 2 条**才出现下三角「展开全部 N 项 / 收起」。卡片底部固定一行链接，文案「**点击跳转到项目仓库**」，`link` 为空则整行不渲染。
 
