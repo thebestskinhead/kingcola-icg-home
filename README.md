@@ -173,6 +173,21 @@ npx wrangler secret put SESSION_SECRET            # 其余五个同理，逐个�
 
 本地开发用同名变量放在 `.dev.vars`（已 gitignore）。
 
+**或者一条命令自动生成并写入**（推荐，尤其首次部署）：
+
+```bash
+npm run secrets:init              # 缺哪个补哪个：随机生成 → 写入 Worker → 打印出来
+npm run secrets:init -- --rotate  # 全部重新生成（⚠️ 所有登录态立即失效）
+npm run secrets:init -- --show    # 只看 .env 里现在的值，不改也不写
+```
+
+它会自动取你的 Worker 名（`--name` → `WORKER_NAME` → `.env.deploy` → 配置里的默认名）——
+**写密钥必须带对名字**，否则会写到一个新建的同名 Worker 上、看起来「密钥没生效」。
+生成的值同时写进 `.env`（已 gitignore）并打印在终端：Cloudflare 的 secret 是**只写不读**的，丢了只能重设。
+
+必须与授权服务器一致的 `SSO_CLIENT_SECRET` / `QR_SIGN_SECRET`、以及邮箱授权码 `SMTP_PASSWORD`
+**不会被自动生成**（只提示你去填），避免两边对不上。
+
 ### 3. 构建并部署（**这一步会把 D1 / KV / R2 建出来**）
 
 ```bash
@@ -266,6 +281,7 @@ curl -X POST https://<你的域名>/api/admin/bootstrap \
 | `npm run deploy` | 构建并部署到 Cloudflare |
 | `npm run typecheck` | 只做类型检查（前端 + Worker） |
 | `npm run db:migrate:local` / `:remote` | 执行 `migrations/*.sql`（Node 脚本，跨平台）。已执行的记在 `_migrations` 台账里，**重复运行自动跳过**；老库（台账之前建的）首次要 `node scripts/migrate.mjs <local\|remote> --adopt` 登记一次 |
+| `npm run secrets:init` | 生成密钥 → 写入 Worker → 打印出来（值同时存进 `.env`）。`-- --rotate` 全部轮换，`-- --show` 只看 |
 | `pwsh -File scripts/smoke-api.ps1` | 内容 / 设置 / 认证 端到端自检 |
 | `pwsh -File scripts/smoke-applications.ps1` | 招新全链路自检（状态机、材料审核、替换与补录、签到二维码、通知邮件、归档清空） |
 

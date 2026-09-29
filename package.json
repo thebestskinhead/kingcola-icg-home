@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "db:migrate:local": "node scripts/migrate.mjs local",
-    "db:migrate:remote": "node scripts/migrate.mjs remote"
+    "db:migrate:remote": "node scripts/migrate.mjs remote",
+    "secrets:init": "node scripts/init-secrets.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
