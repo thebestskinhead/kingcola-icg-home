@@ -10,16 +10,17 @@
 #   npm run dev               # vite dev（端口 5175，/api 反向代理到 8787）
 # ============================================================================
 
-# ⚠️ Worker 名必须与 Cloudflare 面板里的项目名**完全一致**，否则 Git 构建部署时会看到
-#    `Failed to match Worker name... Overriding using the CI provided Worker name`，
-#    CI 会用它的名字覆盖并自动开一个 PR 想帮你改这里（2026-09-29 就收到过这样的 PR）。
-#    本项目的面板项目名是 `kingcola-icg-home2`（当初导入仓库时生成的名字，比仓库名多了个 2），
-#    所以这里跟着写成 `-home2` —— 改名字前先确认面板，**别照抄仓库名**。
-name = "kingcola-icg-home2"
+# ⚠️ Worker 名：这里放的是**通用默认值**（项目名），不是某个人的部署名。
+#    · 部署到自己的项目：`npm run deploy -- --name <面板里的项目名>`，
+#      或在本机 `.env` 里写一行 `WORKER_NAME=<项目名>`（`.env` 已 gitignore，脚本会自动带上）；
+#    · 用 Git 连接构建时：面板里的项目名与这里不一致，Cloudflare 会**用项目名覆盖**再部署
+#      （只是警告 `Failed to match Worker name`，部署仍然成功）——
+#      所以别把「某个账号的项目名」提交进来，仓库保持通用即可。
+name = "kingcola"
 main = "worker/index.ts"
 compatibility_date = "2026-09-01"
 
-# 只走下面的自定义域名：`*.workers.dev` 在国内访问不了（DNS 被污染），留着也没用，
+# 只走自定义域名（绑法见下）：`*.workers.dev` 在国内被 DNS 污染，留着也没用，
 # 而且这一行能让部署日志不再提示「workers_dev 未设置」。
 workers_dev = false
 
@@ -34,13 +35,19 @@ not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
 
 # ---------------------------------------------------------------------------
-# 自定义域名：`*.workers.dev` 在国内会被 DNS 污染（解析到 31.13.94.23 这类 Facebook 的 IP）
-# 而完全访问不了，所以线上入口必须用自有域名。要求域名（或其父 zone，如 002038.xyz）
-# 托管在同一个 Cloudflare 账号下；不需要自定义域就把这一段删掉（退回 workers.dev）。
+# 自定义域名：**刻意不写死在这里** —— 写死等于让每个 clone 的人都去挂「别人的域名」，
+# 而域名（或其父 zone）必须托管在自己的账号下，否则部署直接失败。绑法二选一：
+#   ① 面板（推荐，一次性）：Workers & Pages → 选中本 Worker → Settings →
+#      Domains & Routes → Add custom domain。面板加的绑定不会被后续部署清掉。
+#   ② 命令行：`npm run deploy -- --name <项目名> --domains <你的域名>`。
+#
+# 为什么线上必须有自定义域名：`*.workers.dev` 在国内会被 DNS 污染（解析到 31.13.94.23
+# 这类 Facebook 的 IP）而完全访问不了。
+# 想让配置自我描述，也可以取消下面三行注释、改成**自己的**域名：
+# [[routes]]
+# pattern = "example.com"
+# custom_domain = true
 # ---------------------------------------------------------------------------
-[[routes]]
-pattern = "kingcola.002038.xyz"
-custom_domain = true
 
 # ---------------------------------------------------------------------------
 # D1：唯一事实源（内容、管理员、审计、站点配置）

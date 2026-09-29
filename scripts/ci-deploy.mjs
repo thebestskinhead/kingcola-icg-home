@@ -21,7 +21,11 @@
 //   node scripts/ci-deploy.mjs                 # Workers Builds 的 Deploy command
 //   node scripts/ci-deploy.mjs --dry-run       # 本地演练：只构建不上传
 //   FORCE_NO_R2=1 node scripts/ci-deploy.mjs   # 跳过探测，强制按「没有 R2」部署
-//   （其余参数原样透传给 wrangler，如 `--env=""`）
+//   （其余参数原样透传给 wrangler，如 `--env=""`、`--name 项目名`）
+//
+// 部署到哪个 Worker：`wrangler.toml` 里只是**通用默认名**，账号专属的名字放本机
+// （`.env.deploy` 的 `WORKER_NAME`，或环境变量 WORKER_NAME）—— 仓库里不留任何人的项目名，
+// CI 里没有这个文件，于是走 wrangler.toml 的默认名、再由 Cloudflare 用面板项目名覆盖。
 // ============================================================================
 
 import { spawnSync } from 'node:child_process'
@@ -103,6 +107,25 @@ function probeR2() {
   }
 }
 
+/**
+ * 「部署到哪个 Worker」= 账号专属信息，仓库里只放通用默认名。
+ * 优先环境变量 `WORKER_NAME`，其次本机 `.env.deploy`（已 gitignore）；都没有就空串，
+ * 让 wrangler 用 `wrangler.toml` 里的 name（CI 场景：再由 Cloudflare 用面板项目名覆盖）。
+ */
+function deployName() {
+  const fromEnv = (process.env.WORKER_NAME ?? '').trim()
+  if (fromEnv) return fromEnv
+  try {
+    for (const line of readFileSync(resolve(ROOT, '.env.deploy'), 'utf8').split('\n')) {
+      const hit = /^\s*WORKER_NAME\s*=\s*(.+?)\s*$/.exec(line)
+      if (hit) return hit[1].replace(/^["']|["']$/g, '')
+    }
+  } catch {
+    // 本机没有 .env.deploy（例如跑在 CI 里）—— 正常情况，用默认名
+  }
+  return ''
+}
+
 function main() {
   const argv = process.argv.slice(2)
   const dryRun = argv.includes('--dry-run')
@@ -110,6 +133,13 @@ function main() {
 
   const r2 = probeR2()
   const args = ['deploy', ...passthrough]
+
+  // 「部署到哪个 Worker」是账号专属信息，不进仓库：优先环境变量，其次本机 .env.deploy
+  const name = deployName()
+  if (name && !passthrough.some((arg) => /^--name(=|$)/.test(arg))) {
+    console.log(`· 按本机 .env.deploy / WORKER_NAME 指定的名字部署：${name}`)
+    args.push('--name', name)
+  }
 
   if (r2.ok) {
     console.log('· 检测到账号已开通 R2 → 按 wrangler.toml 原样部署（含 FILES 绑定）')

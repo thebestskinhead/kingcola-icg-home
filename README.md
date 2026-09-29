@@ -174,6 +174,19 @@ npm run deploy        # = npm run build && node scripts/ci-deploy.mjs
 `scripts/ci-deploy.mjs` 会先探测账号能不能用 R2：能用就按 `wrangler.toml` 原样部署，
 不能用就自动剔掉 R2 绑定再部署（见下面那条说明），所以**没有开通 R2 也能一次部署成功**。
 
+> **部署到哪个 Worker、绑哪个域名**（这两项是「账号专属」，刻意**没有**写死在仓库里）：
+>
+> - **Worker 名**：`wrangler.toml` 里放的是通用默认名 `kingcola`。要部署到自己面板里的项目，
+>   在本机建一个 `.env.deploy`（已 gitignore）写 `WORKER_NAME=<面板里的项目名>`，
+>   `scripts/ci-deploy.mjs` 会自动给 `wrangler deploy` 带上 `--name`；
+>   临时一次性的也可以 `npm run deploy -- --name <项目名>`，或设环境变量 `WORKER_NAME`。
+>   （用 Git 连接构建时没有这个文件，就按默认名走 —— Cloudflare 会用面板项目名覆盖，
+>   日志里那句 `Failed to match Worker name` 只是警告，部署照样成功。）
+> - **自定义域名**：面板 → 选中本 Worker → Settings → Domains & Routes → Add custom domain
+>   （加一次即可，后续部署不会清掉）；也可以 `npm run deploy -- --domains <你的域名>`。
+>   线上**必须**有自己的域名：`*.workers.dev` 在国内被 DNS 污染，干脆访问不了
+>   —— 这也是 `workers_dev = false` 的原因。
+
 构建日志里出现 `Provisioning` / `Creating new D1 Database | KV Namespace | R2 Bucket` 就是它在建资源。
 再构建一次若还不断出现 `Creating new ...`，说明没能复用 —— 去面板把它的 ID 填进 `wrangler.toml`
 （照上面「想复用已有资源」的写法），就不会再重复建了。
