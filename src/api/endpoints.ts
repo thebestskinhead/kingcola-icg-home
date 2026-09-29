@@ -92,6 +92,25 @@ export function adminMe() {
   return apiRequest<AdminIdentity>('/api/admin/me')
 }
 
+/**
+ * 首次初始化 / 重置管理员（`POST /api/admin/bootstrap`）。
+ *
+ * `token` 就是服务器上的 `RECOVERY_TOKEN`，它是这套账号体系的唯一钥匙：
+ * 库里一个管理员都没有时 → **创建**第一个；已有管理员时 → **重置**该用户名的密码（找回入口）。
+ * 登录页只在判定「尚未初始化」时才会用到它（见 `src/admin/LoginPage.tsx`）。
+ */
+export function adminBootstrap(input: {
+  token: string
+  username: string
+  password: string
+  seedContent?: boolean
+}) {
+  return apiRequest<{ username: string; created: boolean; seeded: Record<string, string> | null }>(
+    '/api/admin/bootstrap',
+    jsonInit('POST', input),
+  )
+}
+
 export function adminChangePassword(currentPassword: string, newPassword: string) {
   return apiRequest<{ ok: boolean }>(
     '/api/admin/change-password',

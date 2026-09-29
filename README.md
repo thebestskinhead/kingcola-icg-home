@@ -181,11 +181,32 @@ npm run db:migrate:remote        # 按库名 kingcola-db 执行，不需要 ID
 
 ### 5. 初始化管理员（线上只需一次）
 
+**推荐：在页面上做。** 打开 `https://<你的域名>/admin` —— 系统发现还没有管理员时，
+登录页会变成「**首次初始化**」引导：填**初始化口令**（就是上一步设置的 `RECOVERY_TOKEN`）+
+用户名 + 密码，可勾选同时写入演示内容；提交后直接建号并进入后台
+（之后这一页就恢复成普通登录表单，不再显示引导）。
+
+**也可以自己敲命令**（效果完全一样）：
+
 ```bash
 curl -X POST https://<你的域名>/api/admin/bootstrap \
   -H 'content-type: application/json' \
   -d '{"token":"<RECOVERY_TOKEN>","username":"admin","password":"<至少 8 位>","seedContent":true}'
 ```
+
+> 这条命令还有个用途：**忘记密码时用它重置**（库里已有管理员时，它的行为是「重置该用户名的密码」，
+> 不会重复建号；用户名不存在则返回 404）。登录后建议立刻去「系统设置 → 管理员密码」改成自己的密码。
+
+### 6. 部署完自查这 6 项
+
+| 检查 | 期望 |
+|---|---|
+| 构建日志 | Build command 绿、`Provisioning` / `Creating new ...` 出现过（首次），最后 `Deployed` |
+| 资源 | 面板里能看到 D1 `kingcola-db`、KV、R2 `kingcola-files`（缺哪样看第 1 节的说明） |
+| 密钥 | 6 个 secret 都已写入（`npx wrangler secret list`） |
+| 建表 | `npm run db:migrate:remote` 跑过（否则后台一进去就报错） |
+| 管理员 | `/admin` 能初始化并登录 |
+| 健康检查 | `curl https://<你的域名>/api/health` → `database: ok`，`storage.site/applications` 符合预期 |
 
 > **也可以连 Git 自动部署**（Cloudflare 面板 → Worker → Settings → Builds → Connect）：
 >
