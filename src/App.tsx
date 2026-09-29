@@ -8,13 +8,14 @@ import { NewsSection } from '@/sections/NewsSection'
 import { JoinSection } from '@/sections/JoinSection'
 import { InviteSection } from '@/sections/InviteSection'
 import { CheckinSection } from '@/sections/CheckinSection'
+import { GraduateSection } from '@/sections/GraduateSection'
 import { Footer } from '@/sections/Footer'
 import { CHECKIN_PATH } from '@shared/recruit'
 import { Toaster } from '@/components/ui/sonner'
 import { AdminApp } from '@/admin/AdminApp'
 import { refreshRuntimeConfig } from '@/api/client'
 import { useSiteData } from '@/api/hooks'
-import { INVITE_PATH, PAGE_LABELS, PAGE_PATHS, type PageKey } from '@/types'
+import { GRADUATE_PATH, INVITE_PATH, PAGE_LABELS, PAGE_PATHS, type PageKey } from '@/types'
 import { AlertTriangle } from 'lucide-react'
 
 /** 公开站点兜底页：只有后台有独立路由，其余未知路径都落在这里 */
@@ -113,6 +114,8 @@ function PublicSite() {
             {/* 扫码签到页：只有后台签发的签到二维码会指向这里（token 即凭证，只绑阶段），
                 没有裸入口 —— 不填 token 或 token 失效都拿不到任何签到信息 */}
             <Route path={`${CHECKIN_PATH}/:token`} element={<CheckinSection site={site} />} />
+            {/* 毕业去向填写页：批量毕业那封信里的专属链接指向这里，同样凭 token 进入、不要求登录 */}
+            <Route path={`${GRADUATE_PATH}/:token`} element={<GraduateSection site={site} />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         )}

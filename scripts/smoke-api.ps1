@@ -425,6 +425,49 @@ try {
 
     Remove-Item $tmpImage, $fake, $bigImage -Force -ErrorAction SilentlyContinue
 
+    Step '8c) 批量毕业 + 毕业去向填写页（凭证即密权）'
+    # 走完整链路：批量毕业（顺带发信）→ 签发专属链接 → 打开 / 提交 → 链接一次性失效 → 去向写回成员档案
+    $gradResp = Invoke-RestMethod "$base/api/admin/content/members" -Method Post -Headers $authHeaders `
+        -ContentType 'application/json' -Body (@{
+            name = '冒烟-毕业生'; nameEn = ''; title = '前端开发'; direction = '自动化测试'
+            destination = ''; email = 'smoke-graduate@example.com'; joinYear = '2022'
+            status = 'current'; isPI = $false; bio = ''; avatarUrl = ''; homepageUrl = ''; sortOrder = 0
+        } | ConvertTo-Json -Depth 5)
+    $gradId = $gradResp.data.id
+    $graduated = Invoke-RestMethod "$base/api/admin/members/graduate" -Method Post -Headers $authHeaders `
+        -ContentType 'application/json' -Body (@{ ids = @($gradId); sendMail = $true } | ConvertTo-Json)
+    Write-Host "批量毕业 -> $($graduated.data.message)" -ForegroundColor Green
+
+    # 链接是凭证，刻意不出现在任何接口的返回值里 —— 只能从库里取（这同时也是「没泄露」的证明）
+    $wrangler = Join-Path $root 'node_modules\wrangler\bin\wrangler.js'
+    $tokenRaw = node $wrangler d1 execute kingcola-db --local --json `
+        --command="SELECT destination_token FROM members WHERE id = '$gradId'" | Out-String
+    $gradToken = ([regex]::Match($tokenRaw, 'gd_[0-9a-z]+')).Value
+    if (-not $gradToken) { throw '批量毕业没有签发毕业去向链接' }
+
+    $form = Invoke-RestMethod "$base/api/members/destination/$gradToken"
+    Write-Host "填写页（无需登录）-> $($form.data.name)  已有值='$($form.data.current)'" -ForegroundColor Green
+
+    Invoke-RestMethod "$base/api/members/destination/$gradToken" -Method Post -ContentType 'application/json' `
+        -Body (@{ destination = '冒烟测试去向' } | ConvertTo-Json) | Out-Null
+    $reuse = & curl.exe -s -o NUL -w '%{http_code}' "$base/api/members/destination/$gradToken"
+    if ($reuse -eq '404') {
+        Write-Host '链接提交后立即失效（每条只能用一次）' -ForegroundColor Green
+    } else {
+        Write-Host "链接竟然还能重复提交（HTTP $reuse）" -ForegroundColor Red
+    }
+
+    $saved = (Invoke-RestMethod "$base/api/admin/content/members/$gradId" -Headers $authHeaders).data
+    Write-Host "去向已写回成员档案：状态=$($saved.status)  加入年份=$($saved.joinYear)  去向=$($saved.destination)" -ForegroundColor Green
+    Write-Host "token 是否泄露到公开接口：" -NoNewline
+    $publicRaw = & curl.exe -s "$base/api/public/bootstrap"
+    if ($publicRaw -match 'destination_token') {
+        Write-Host ' 泄露了！' -ForegroundColor Red
+    } else {
+        Write-Host ' 没有（按字段表逐列回传）' -ForegroundColor Green
+    }
+    Invoke-RestMethod "$base/api/admin/content/members/$gradId" -Method Delete -Headers $authHeaders | Out-Null
+
     Step '9) 操作日志'
     $audit = Invoke-RestMethod "$base/api/admin/audit?limit=6" -Headers $authHeaders
     Write-Host "audit logs=$($audit.data.logs.Count)" -ForegroundColor Green

@@ -12,6 +12,7 @@ import {
   MATERIAL_STATUS_LABELS,
   nextStageOf,
   prevStageOf,
+  RECRUIT_APPLICATION_MAIL_KINDS,
   RECRUIT_MAIL_KINDS,
   RECRUIT_MAIL_META,
   RECRUIT_STAGE_LABELS,
@@ -1058,7 +1059,7 @@ function AppDetailDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">不发送</SelectItem>
-                  {RECRUIT_MAIL_KINDS.map((kind) => (
+                  {RECRUIT_APPLICATION_MAIL_KINDS.map((kind) => (
                     <SelectItem key={kind} value={kind}>
                       {RECRUIT_MAIL_META[kind].label}
                     </SelectItem>

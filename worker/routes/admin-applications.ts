@@ -60,7 +60,7 @@ import { isMailConfigured, sendMail } from '../lib/mailer'
 import { getRecruitSettings } from '../lib/recruit-config'
 import {
   buildNoticeVars,
-  isNoticeKind,
+  isApplicationNoticeKind,
   sendApplicationNotice,
   summarizeMailResults,
   type NoticeContext,
@@ -376,7 +376,7 @@ export async function updateApplicationAdmin(ctx: RequestContext): Promise<Respo
   }
 
   const noticeRaw = (body.notice ?? '').trim()
-  if (noticeRaw && isNoticeKind(noticeRaw)) {
+  if (noticeRaw && isApplicationNoticeKind(noticeRaw)) {
     const runtime = await resolveRuntimeConfig(ctx)
     mail = await sendApplicationNotice(
       ctx.env,

@@ -15,7 +15,7 @@ export interface Member {
   title: string
   /** 在组期间的负责方向（status=current 时必填） */
   direction: string
-  /** 毕业去向（status=alumni 时必填） */
+  /** 毕业去向（由本人通过邮件里的专属链接填写，所以刚毕业那阵子可能是空的） */
   destination: string
   email: string
   /** 个人主页链接（博客 / GitHub / 作品集）；为空时成员卡片上不显示 */
@@ -212,6 +212,20 @@ export const INVITE_PATH = '/invite'
 export function invitePath(token: string): string {
   return `${INVITE_PATH}/${encodeURIComponent(token)}`
 }
+
+/**
+ * 「填写毕业去向」页的路径。
+ * 与邀请函同理：不是板块（不进导航），但路径只在这里声明一次。
+ */
+export const GRADUATE_PATH = '/graduate'
+
+/** 毕业去向填写页地址；`token` 是邮件里的一次性凭证（提交后即失效） */
+export function graduatePath(token: string): string {
+  return `${GRADUATE_PATH}/${encodeURIComponent(token)}`
+}
+
+/** 毕业去向的文字上限（后台手填与学生自填共用同一条） */
+export const DESTINATION_MAX = 120
 
 // ===== 站点公开配置（工作室自身的全部信息，均可在后台编辑） =====
 

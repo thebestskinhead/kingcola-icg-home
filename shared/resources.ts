@@ -99,6 +99,48 @@ export interface ResourceDef {
   isPublic: boolean
   /** 主键由数据库自增分配（此时 id 为 number，新增时不需要也不允许指定） */
   autoId?: boolean
+  /**
+   * 按某个 select 字段把后台列表拆成几个页签（成员按 status 分「在组 / 已毕业」）。
+   * 页签只影响界面：列表按该值过滤，且 `showWhen` 不成立的字段连列都不显示
+   * （于是在组视图里根本看不到「毕业去向」，已毕业视图里看不到「负责方向」）。
+   */
+  groups?: ResourceGroupDef
+  /** 可勾选多条执行的批量动作（成员：批量毕业） */
+  bulk?: readonly ResourceBulkDef[]
+}
+
+export interface ResourceGroupDef {
+  /** 分组字段，必须是本资源的 select 字段 key */
+  key: string
+  tabs: ReadonlyArray<{ value: string; label: string }>
+  /** 新增记录时，把当前页签的值预置到该字段（在「已毕业」页签新增 → 直接是已毕业） */
+  prefillOnCreate?: boolean
+}
+
+export interface ResourceBulkDef {
+  /**
+   * 动作标识，前端据此决定调哪个接口（见 `src/admin/ContentPage.tsx` 的 runBulk）。
+   * 刻意不放字段名/取值 —— 具体语义在各自的 worker 路由里，避免界面能绕过校验。
+   */
+  kind: 'graduate' | 'collect_destination'
+  label: string
+  hint: string
+  /** 只在这些分组页签下出现（不填 = 所有页签都出现） */
+  tabs?: readonly string[]
+  /**
+   * 点开时**替你勾好**（`latest-group` = 按分组字段里最新的一届）。
+   * 有它就不必先手动勾选 —— 按钮一直可点，进去默认已选好、再改。
+   */
+  preselect?: 'latest-group'
+  /**
+   * 用专属的**两步向导**（选人 → 寄信）替代简单确认框。
+   * 毕业这种「一届一届走」的动作值得单独一屏，见 `src/admin/GraduateWizard.tsx`。
+   */
+  wizard?: boolean
+  /** 简单确认框的标题；`{n}` 会替换成勾选条数（走向导的动作不用填） */
+  confirmTitle?: string
+  /** 简单确认框的正文（走向导的动作不用填） */
+  confirmNote?: string
 }
 
 export const RESOURCES: Record<ResourceKey, ResourceDef> = {
@@ -162,9 +204,11 @@ export const RESOURCES: Record<ResourceKey, ResourceDef> = {
         type: 'text',
         inList: true,
         showWhen: { key: 'status', equals: ['alumni'] },
-        requiredWhen: { key: 'status', equals: ['alumni'] },
+        // ⚠️ 刻意**不**用 requiredWhen：毕业去向现在是**由本人异步填**的
+        // （批量毕业时发信 → 同学点专属链接自己填），刚毕业那阵子必然为空。
+        // 这里若强制必填，管理员想给刚毕业的人换个头像都会被「毕业去向不能为空」挡住。
         placeholder: '如：某互联网大厂 前端工程师 / 本校读研',
-        hint: '已毕业成员必填，会显示在成员卡片上',
+        hint: '已毕业成员填写；批量毕业时会给本人发一条专属填写链接',
         defaultValue: '',
       },
       { key: 'email', column: 'email', label: '邮箱', type: 'text', inList: true, placeholder: 'name@example.edu.cn' },
@@ -191,6 +235,38 @@ export const RESOURCES: Record<ResourceKey, ResourceDef> = {
       { key: 'isPI', column: 'is_pi', label: '工作室负责人', type: 'switch', inList: true, compact: true, defaultValue: false },
       { key: 'bio', column: 'bio', label: '个人简介', type: 'textarea', placeholder: '简要介绍研究方向与指导理念…' },
       { key: 'sortOrder', column: 'sort_order', label: '排序权重', type: 'number', hint: '数字越小越靠前', defaultValue: 0 },
+    ],
+    // 「在组」与「已毕业」两块分开：页签一换，列表过滤 + 列集合都跟着变，
+    // 于是在组的人根本不会看到「毕业去向」这项（表单里本来就被 showWhen 挡着）。
+    groups: {
+      key: 'status',
+      tabs: [
+        { value: 'current', label: '在组' },
+        { value: 'alumni', label: '已毕业' },
+      ],
+      prefillOnCreate: true,
+    },
+    bulk: [
+      {
+        kind: 'graduate',
+        // 文案是用户定的：毕业该有点人情味，别叫「批量毕业」
+        label: '到了说再见的时候了',
+        hint: '把最晚一届的在组成员送毕业，顺带寄一封信问问他们去哪儿了',
+        // 只出现在「在组」页签：已经在「已毕业」里再点毕业没有意义
+        tabs: ['current'],
+        preselect: 'latest-group',
+        wizard: true,
+      },
+      {
+        kind: 'collect_destination',
+        label: '发送去向征集',
+        hint: '给选中的已毕业成员发信，请他们打开专属链接填写毕业去向（重发会换新链接，旧链接立即失效）',
+        // 只出现在「已毕业」页签
+        tabs: ['alumni'],
+        confirmTitle: '确认给勾选的 {n} 位发送「毕业去向征集」邮件？',
+        confirmNote:
+          '邮件里带一条专属填写链接，同学填完直接写进成员档案。没填邮箱的成员会被跳过并如实报数（可以在这里看到谁没邮箱）。',
+      },
     ],
   },
 

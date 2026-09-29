@@ -872,6 +872,8 @@ export type RecruitMailKind =
   | 'thanks_defense'
   /** 材料驳回通知（含驳回理由，要求同学改好重传） */
   | 'material_rejected'
+  /** 毕业去向征集（成员管理「批量毕业」时发给已毕业的同学） */
+  | 'graduation_destination'
 
 export const RECRUIT_MAIL_KINDS: readonly RecruitMailKind[] = [
   'written_invite',
@@ -882,7 +884,18 @@ export const RECRUIT_MAIL_KINDS: readonly RecruitMailKind[] = [
   'thanks_interview',
   'thanks_defense',
   'material_rejected',
+  'graduation_destination',
 ]
+
+/**
+ * 「可以按**报名记录**补发」的模板：除「毕业去向征集」以外的全部。
+ *
+ * 那封信的收件人是**成员**而不是报名同学，出现在名单的「补发某封信」下拉里只会发错人 ——
+ * 所以它照旧出现在模板管理页（用户明确要求先放招新里），但不进可补发清单。
+ */
+export const RECRUIT_APPLICATION_MAIL_KINDS: readonly RecruitMailKind[] = RECRUIT_MAIL_KINDS.filter(
+  (kind) => kind !== 'graduation_destination',
+)
 
 export interface RecruitMailMeta {
   label: string
@@ -909,6 +922,13 @@ export const RECRUIT_MAIL_META: Record<RecruitMailKind, RecruitMailMeta> = {
     audience: '材料没通过审核的同学',
     trigger: '后台在报名阶段点「驳回材料」时立即发出，正文含驳回理由',
   },
+  graduation_destination: {
+    label: '毕业去向征集',
+    // 严格说这封信不属于招新，但模板管理页暂时还挂在招新里（用户计划之后整体迁出），
+    // 所以这条模板先放这儿，发送时机是成员管理里的「批量毕业」。
+    audience: '刚被标记为「已毕业」的成员',
+    trigger: '在「团队成员 → 批量毕业」时勾选「同时发信」立即发出',
+  },
 }
 
 export interface MailTemplate {
@@ -933,6 +953,7 @@ export const RECRUIT_MAIL_VARIABLES: ReadonlyArray<{ token: string; desc: string
   { token: '{probationGroup}', desc: '预备成员 QQ 群号' },
   { token: '{formalGroup}', desc: '正式成员 QQ 群号' },
   { token: '{inviteLink}', desc: '邀请函确认链接（仅正式邀请函有值）' },
+  { token: '{destinationLink}', desc: '毕业去向填写页链接（仅「毕业去向征集」有值，提交后失效）' },
   { token: '{rejectReason}', desc: '材料驳回理由（仅材料驳回通知有值，管理员填写）' },
   { token: '{studio}', desc: '工作室名称' },
   { token: '{contactEmail}', desc: '工作室联系邮箱' },
@@ -1079,6 +1100,25 @@ export const DEFAULT_RECRUIT_TEMPLATES: RecruitTemplates = {
       '重新上传后我们会再看一遍，结果会另行通知你。',
       '',
       '如果对这条理由有疑问，直接回复本邮件即可。',
+      '',
+      SIGN_DEFAULT,
+    ].join('\n'),
+  },
+
+  graduation_destination: {
+    enabled: true,
+    subject: '【{studio}】毕业去向登记 · {name}',
+    body: [
+      '{name} 同学：',
+      '',
+      '祝贺毕业！工作室想把你的毕业去向记进团队档案的「已毕业成员」一栏 ——',
+      '既是给学弟学妹的参考，也方便以后联系你。',
+      '',
+      '点开下面这条链接填一句话就行（约 10 秒）：',
+      '{destinationLink}',
+      '',
+      '例如：某互联网大厂 前端工程师 / 本校读研深造。',
+      '暂时还没定也没关系，定了再回来填；链接提交一次就失效，要改直接回复本邮件即可。',
       '',
       SIGN_DEFAULT,
     ].join('\n'),

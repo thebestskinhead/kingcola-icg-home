@@ -13,6 +13,7 @@
 import type { RecruitMailKind } from '../../shared/recruit'
 import {
   cycleMailVars,
+  RECRUIT_APPLICATION_MAIL_KINDS,
   RECRUIT_MAIL_META,
   renderTemplate,
   type RecruitCycleConfig,
@@ -215,4 +216,12 @@ export function noticePreviewHint(kind: RecruitMailKind, ctx: NoticeContext): st
 /** 判断一个字符串是不是合法的通知类型（接口入参校验用） */
 export function isNoticeKind(value: string): value is RecruitMailKind {
   return Object.prototype.hasOwnProperty.call(RECRUIT_MAIL_META, value)
+}
+
+/**
+ * 能不能按**报名记录**补发这封信。
+ * 与 `isNoticeKind` 的区别只有一个：排除只发给成员的「毕业去向征集」。
+ */
+export function isApplicationNoticeKind(value: string): value is RecruitMailKind {
+  return (RECRUIT_APPLICATION_MAIL_KINDS as readonly string[]).includes(value)
 }

@@ -11,6 +11,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -45,6 +46,7 @@ import {
   isResourceKey,
   validateEntity,
   type FieldDef,
+  type ResourceBulkDef,
   type ResourceDef,
 } from '@shared/resources'
 import {
@@ -52,12 +54,14 @@ import {
   adminCreateContent,
   adminUpdateContent,
   adminListContent,
+  adminSendDestinationMails,
   adminMemberRoles,
 } from '@/api/endpoints'
+import { GraduateWizard } from './GraduateWizard'
 import { adminRoleLabels } from '@shared/identity'
 import { ApiError } from '@/api/client'
 import { cn } from '@/lib/utils'
-import { Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { GraduationCap, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 type Entity = Record<string, unknown>
@@ -200,8 +204,52 @@ export function ContentPage() {
   const [saving, setSaving] = useState(false)
   /** 运行时方向字典里可用的方向名（进页时拉一次） */
   const [roleLabels, setRoleLabels] = useState<string[]>([])
+  /** 分组页签（只有配了 def.groups 的资源用得到，目前是成员的「在组 / 已毕业」） */
+  const [tab, setTab] = useState('')
+  /** 勾选的行 id（给批量动作用） */
+  const [selected, setSelected] = useState<string[]>([])
+  /** 待执行的批量动作；非空即弹窗 —— 带 wizard 的走专属向导，其余走简单确认框 */
+  const [bulkRequest, setBulkRequest] = useState<ResourceBulkDef | null>(null)
+  const [bulkRunning, setBulkRunning] = useState(false)
 
-  const listFields = useMemo(() => (def ? def.fields.filter((f) => f.inList) : []), [def])
+  const groups = def?.groups
+  const activeTab = groups ? tab || groups.tabs[0].value : ''
+  /** 批量动作按页签收敛：「批量毕业」只出现在「在组」，「发送去向征集」只出现在「已毕业」 */
+  const bulkDefs = useMemo(
+    () => (def?.bulk ?? []).filter((item) => !item.tabs || item.tabs.includes(activeTab)),
+    [def, activeTab],
+  )
+
+  /** 页签只做界面层过滤：列表按分组字段取值筛。 */
+  const visibleItems = useMemo(
+    () => (groups ? items.filter((item) => String(item[groups.key] ?? '') === activeTab) : items),
+    [items, groups, activeTab],
+  )
+
+  const tabCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    if (!groups) return counts
+    for (const item of items) {
+      const value = String(item[groups.key] ?? '')
+      counts[value] = (counts[value] ?? 0) + 1
+    }
+    return counts
+  }, [items, groups])
+
+  /**
+   * 列集合跟着页签走：`showWhen` 在这里第二次派上用场 ——
+   * 成员的「毕业去向」只在 status=alumni 时生效，所以在「在组」视图里它连列都不出现，
+   * 反之「负责方向」也不会出现在「已毕业」视图里。
+   */
+  const listFields = useMemo(
+    () =>
+      def
+        ? def.fields.filter(
+            (field) => field.inList && (!groups || isFieldActive(field, { [groups.key]: activeTab })),
+          )
+        : [],
+    [def, groups, activeTab],
+  )
 
   /** 本资源是否用到了「取值来自运行时字典」的字段（目前只有成员的角色） */
   const usesRoleDictionary = useMemo(
@@ -271,7 +319,10 @@ export function ContentPage() {
   const openCreate = () => {
     setEditingId(null)
     setOriginal(null)
-    setDraft(defaultEntity(def))
+    const blank = defaultEntity(def)
+    // 在哪个页签新增，分组字段就预置成那个值（「已毕业」页签里新增 → 直接是已毕业）
+    if (groups?.prefillOnCreate) blank[groups.key] = activeTab
+    setDraft(blank)
   }
 
   const openEdit = (entity: Entity) => {
@@ -346,6 +397,31 @@ export function ContentPage() {
     }
   }
 
+  /**
+   * 执行**简单**批量动作（走确认框的那些）。
+   * 「到了说再见的时候了」不在这里 —— 它有自己的两步向导 `GraduateWizard`；
+   * 接口语义都留在各自的 worker 路由里，前端不做取舍。
+   */
+  const runBulk = async () => {
+    if (!bulkRequest) return
+    setBulkRunning(true)
+    try {
+      const result = await adminSendDestinationMails(selected)
+      toast.success(`${bulkRequest.label}完成`, { description: result.message })
+      setBulkRequest(null)
+      setSelected([])
+      await load()
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : `${bulkRequest.label}失败`)
+    } finally {
+      setBulkRunning(false)
+    }
+  }
+
+  const hasBulk = bulkDefs.length > 0
+  const allVisibleSelected =
+    visibleItems.length > 0 && visibleItems.every((item) => selected.includes(String(item.id)))
+
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
@@ -374,10 +450,74 @@ export function ContentPage() {
         </div>
       </div>
 
+      {/* ===== 分组页签：在组 / 已毕业（只有配了 def.groups 的资源才有） ===== */}
+      {groups && (
+        <div className="mb-4 flex items-center gap-2">
+          {groups.tabs.map((item) => (
+            <button
+              key={item.value}
+              onClick={() => {
+                setTab(item.value)
+                setSelected([])
+              }}
+              className={cn(
+                'rounded-full px-5 py-2 text-sm transition-colors',
+                activeTab === item.value
+                  ? 'bg-primary text-primary-foreground'
+                  : 'border border-border text-foreground/70 hover:bg-secondary',
+              )}
+            >
+              {item.label} {tabCounts[item.value] ?? 0}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ===== 批量动作条 =====
+          带 preselect 的动作（毕业向导）不用先勾选，所以这一条一直显示；
+          其余动作要先勾人，没勾就置灰。 */}
+      {hasBulk && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-secondary/40 px-4 py-2.5">
+          <span className="text-sm text-muted-foreground">
+            已勾选 <strong className="text-foreground">{selected.length}</strong> 条
+          </span>
+          {bulkDefs.map((item) => (
+            <Button
+              key={item.kind}
+              size="sm"
+              className="gap-1.5"
+              title={item.hint}
+              disabled={bulkRunning || (!item.preselect && selected.length === 0)}
+              onClick={() => setBulkRequest(item)}
+            >
+              <GraduationCap className="h-3.5 w-3.5" /> {item.label}
+            </Button>
+          ))}
+          {selected.length > 0 && (
+            <button
+              onClick={() => setSelected([])}
+              className="ml-auto text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              清空勾选
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-xl border border-border bg-card">
         <Table>
           <TableHeader>
             <TableRow>
+              {hasBulk && (
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={allVisibleSelected}
+                    onCheckedChange={(checked) =>
+                      setSelected(checked ? visibleItems.map((item) => String(item.id)) : [])
+                    }
+                  />
+                </TableHead>
+              )}
               <TableHead className="w-12">#</TableHead>
               {listFields.map((field) => (
                 <TableHead key={field.key}>{field.label}</TableHead>
@@ -386,44 +526,65 @@ export function ContentPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {items.map((entity, index) => (
-              <TableRow key={String(entity.id)}>
-                <TableCell className="text-muted-foreground">{index + 1}</TableCell>
-                {listFields.map((field) => (
-                  <TableCell key={field.key}>
-                    <CellValue field={field} entity={entity} />
+            {visibleItems.map((entity, index) => {
+              const rowId = String(entity.id)
+              return (
+                <TableRow key={rowId}>
+                  {hasBulk && (
+                    <TableCell>
+                      <Checkbox
+                        checked={selected.includes(rowId)}
+                        onCheckedChange={(checked) =>
+                          setSelected((prev) =>
+                            checked ? [...prev, rowId] : prev.filter((id) => id !== rowId),
+                          )
+                        }
+                      />
+                    </TableCell>
+                  )}
+                  <TableCell className="text-muted-foreground">{index + 1}</TableCell>
+                  {listFields.map((field) => (
+                    <TableCell key={field.key}>
+                      <CellValue field={field} entity={entity} />
+                    </TableCell>
+                  ))}
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <button
+                        onClick={() => openEdit(entity)}
+                        className="rounded-full p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        title="编辑"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => setDeleting(entity)}
+                        className="rounded-full p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        title="删除"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </TableCell>
-                ))}
-                <TableCell className="text-right">
-                  <div className="flex justify-end gap-1">
-                    <button
-                      onClick={() => openEdit(entity)}
-                      className="rounded-full p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                      title="编辑"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => setDeleting(entity)}
-                      className="rounded-full p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                      title="删除"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-            {!loading && items.length === 0 && (
+                </TableRow>
+              )
+            })}
+            {!loading && visibleItems.length === 0 && (
               <TableRow>
-                <TableCell colSpan={listFields.length + 2} className="py-14 text-center text-sm text-muted-foreground">
-                  暂无数据
+                <TableCell
+                  colSpan={listFields.length + 2 + (hasBulk ? 1 : 0)}
+                  className="py-14 text-center text-sm text-muted-foreground"
+                >
+                  {groups ? `暂无「${groups.tabs.find((t) => t.value === activeTab)?.label ?? ''}」记录` : '暂无数据'}
                 </TableCell>
               </TableRow>
             )}
             {loading && (
               <TableRow>
-                <TableCell colSpan={listFields.length + 2} className="py-14 text-center text-sm text-muted-foreground">
+                <TableCell
+                  colSpan={listFields.length + 2 + (hasBulk ? 1 : 0)}
+                  className="py-14 text-center text-sm text-muted-foreground"
+                >
                   加载中…
                 </TableCell>
               </TableRow>
@@ -477,6 +638,58 @@ export function ContentPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ===== 毕业向导：「到了说再见的时候了」走这条（默认勾好最晚一届 → 寄信） ===== */}
+      {bulkRequest?.wizard && (
+        <GraduateWizard
+          items={items}
+          onClose={() => setBulkRequest(null)}
+          onFinished={async () => {
+            setSelected([])
+            await load()
+          }}
+        />
+      )}
+
+      {/* ===== 批量动作确认（简单动作：发送去向征集） ===== */}
+      <AlertDialog
+        open={bulkRequest !== null && !bulkRequest.wizard}
+        onOpenChange={(open) => {
+          if (!open && !bulkRunning) setBulkRequest(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {(bulkRequest?.confirmTitle ?? `确认${bulkRequest?.label ?? ''}？`).replace(
+                '{n}',
+                String(selected.length),
+              )}
+            </AlertDialogTitle>
+            <AlertDialogDescription>{bulkRequest?.confirmNote}</AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkRunning}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={bulkRunning}
+              onClick={(event) => {
+                // 发送是慢操作：先别让弹窗关掉，跑完由 runBulk 自己收尾
+                event.preventDefault()
+                void runBulk()
+              }}
+            >
+              {bulkRunning ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> 处理中…
+                </>
+              ) : (
+                `确认${bulkRequest?.label ?? ''}`
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ===== 删除确认 ===== */}
       <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>

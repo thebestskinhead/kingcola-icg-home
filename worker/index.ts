@@ -40,6 +40,7 @@ import {
   updateAdminConfig,
   updateContent,
 } from './routes/admin-content'
+import { graduateMembers, sendDestinationMails } from './routes/admin-members'
 import {
   exportRecruitCsv,
   getRecruitMails,
@@ -64,6 +65,7 @@ import {
 } from './routes/applications'
 import { getRuntimeConfig } from './routes/config'
 import { sendTestMail } from './routes/mail'
+import { getDestinationForm, submitDestinationForm } from './routes/members'
 import { getBootstrap, getPublicContent, getSiteConfigRoute, health } from './routes/public'
 import {
   consumeDirectDownload,
@@ -108,6 +110,10 @@ const routes: RouteDef[] = [
   // 也没有裸入口（导航里不出现，直接访问无 token 的路径拿不到任何信息）。
   { method: 'GET', path: '/api/applications/checkin/:token', handler: getCheckinInfo },
   { method: 'POST', path: '/api/applications/checkin/:token', handler: checkin },
+
+  // ---- 毕业去向填写（凭证即密权，不要求登录；与邀请函同一路数） ----
+  { method: 'GET', path: '/api/members/destination/:token', handler: getDestinationForm },
+  { method: 'POST', path: '/api/members/destination/:token', handler: submitDestinationForm },
 
   // ---- 教务网单点登录（授权码模式，授权服务器部署在国内 EdgeOne） ----
   { method: 'GET', path: '/api/auth/login', handler: ssoLogin },
@@ -175,6 +181,11 @@ const routes: RouteDef[] = [
   { method: 'GET', path: '/api/admin/content/:resource/:id', handler: getContent, auth: 'admin' },
   { method: 'PUT', path: '/api/admin/content/:resource/:id', handler: updateContent, auth: 'admin' },
   { method: 'DELETE', path: '/api/admin/content/:resource/:id', handler: deleteContent, auth: 'admin' },
+
+  // ---- 后台：成员管理的批量动作（一次动一批人 + 可选发一批信） ----
+  // 路径与 /api/admin/content/* 不同，不会互相截胡
+  { method: 'POST', path: '/api/admin/members/graduate', handler: graduateMembers, auth: 'admin' },
+  { method: 'POST', path: '/api/admin/members/destination-mail', handler: sendDestinationMails, auth: 'admin' },
 
   // ---- 后台：成员「方向 / 角色」字典（存 KV + D1，见 lib/identity-config.ts） ----
   // 不是内容类型之一：它不是「一条条记录」，而是一份整读整写的配置 —— 所以走自己的接口，

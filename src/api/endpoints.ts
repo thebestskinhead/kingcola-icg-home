@@ -153,6 +153,71 @@ export function adminUpdateContent<T = Record<string, unknown>>(
   return apiRequest<T>(`/api/admin/content/${resource}/${encodeURIComponent(id)}`, jsonInit('PUT', body))
 }
 
+/** 「毕业去向征集」的发信汇总（发不出去不阻断毕业） */
+export interface DestinationMailSummary {
+  sent: number
+  failed: number
+  /** 没填邮箱 / 模板停用 / 通道没接通，都算跳过 */
+  skipped: number
+  /** 本次新签发的专属链接数 */
+  issued: number
+  message: string
+}
+
+export interface GraduateResult {
+  graduated: number
+  /** 本来就是已毕业，没重复改也没重复发信 */
+  already: number
+  missing: string[]
+  mail: DestinationMailSummary | null
+  message: string
+}
+
+/**
+ * 批量毕业：把选中的人从「在组」移到「已毕业」，可选同时发出「毕业去向征集」信。
+ * 只改状态 —— **届别就看加入年份**（`joinYear`），不再单独记一个毕业年份。
+ * 「毕业去向」也不在这里填：信里带一条专属链接，由本人自己填。
+ */
+export function adminGraduateMembers(ids: string[], sendMail: boolean) {
+  return apiRequest<GraduateResult>(
+    '/api/admin/members/graduate',
+    jsonInit('POST', { ids, sendMail }),
+    { timeoutMs: 120_000 },
+  )
+}
+
+/**
+ * 给选中的已毕业成员（重新）发送「毕业去向征集」信。
+ * 重发会换一条新链接，旧链接立即失效。
+ */
+export function adminSendDestinationMails(ids: string[]) {
+  return apiRequest<DestinationMailSummary>(
+    '/api/admin/members/destination-mail',
+    jsonInit('POST', { ids }),
+    { timeoutMs: 120_000 },
+  )
+}
+
+// ===== 毕业去向填写页（凭证即密权，不需要登录） =====
+
+export interface DestinationForm {
+  name: string
+  studioName: string
+  /** 已有的值（后台手填过 / 上次提交过）——预填进输入框 */
+  current: string
+}
+
+export function fetchDestinationForm(token: string) {
+  return apiRequest<DestinationForm>(`/api/members/destination/${encodeURIComponent(token)}`)
+}
+
+export function submitDestinationForm(token: string, destination: string) {
+  return apiRequest<{ name: string; destination: string }>(
+    `/api/members/destination/${encodeURIComponent(token)}`,
+    jsonInit('POST', { destination }),
+  )
+}
+
 export function adminDeleteContent(resource: ResourceKey, id: string) {
   return apiRequest<{ id: string }>(
     `/api/admin/content/${resource}/${encodeURIComponent(id)}`,

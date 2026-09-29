@@ -98,6 +98,8 @@ export function RecruitSettingsView({ admin }: { admin: RecruitAdmin }) {
     studentId: '2026001',
     ...cycleMailVars(admin.cycle),
     inviteLink: `${window.location.origin}/invite/abc123`,
+    // 毕业去向填写链接：只有「毕业去向征集」用得上（由成员管理里的批量动作签发）
+    destinationLink: `${window.location.origin}/graduate/abc123`,
     // 驳回理由本来就是「由管理员逐次填写」的，给个示例比显示「还没配置」有用
     rejectReason: '报名表缺成绩单页，请补齐后重新上传。',
     studio: site?.studioName ?? '',

@@ -60,9 +60,9 @@ function MemberCard({ member }: { member: Member }) {
           href={homeHref(member.homepageUrl)}
           target="_blank"
           rel="noreferrer noopener"
-          className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-accent"
+          className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-accent underline decoration-dotted underline-offset-2 transition-colors hover:decoration-solid"
         >
-          <Globe className="h-3 w-3" /> 个人主页
+          <Globe className="h-3 w-3" /> 点击进入个人主页
         </a>
       )}
     </div>
@@ -135,9 +135,9 @@ export function MembersSection({ members }: { members: Member[] }) {
                   href={homeHref(pi.homepageUrl)}
                   target="_blank"
                   rel="noreferrer noopener"
-                  className="inline-flex items-center gap-1.5 hover:text-accent"
+                  className="inline-flex items-center gap-1.5 font-medium text-accent underline decoration-dotted underline-offset-2 transition-colors hover:decoration-solid"
                 >
-                  <Globe className="h-3.5 w-3.5" /> 个人主页
+                  <Globe className="h-3.5 w-3.5" /> 点击进入个人主页
                 </a>
               )}
             </div>
