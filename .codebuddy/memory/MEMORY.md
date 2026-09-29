@@ -30,12 +30,19 @@
   2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（得到 `e223097`）后推送成功。
   ⚠️ **绝不能强推 main** —— 本地历史里没有 LICENSE 文件，强推会把 GPL-3.0 许可证从仓库上抹掉。
   `main` **没有设 upstream**，推送要写全：`git push kingcalo-icg-home main`。
-- **云资源绑定约定（用户 2026-09-29 口径）**：**不自动创建** —— `database_id` / KV 的 `id` **绝不留空**
-  （留空 = 让 wrangler 自动新建一套带 Worker 名前缀的资源，这不是我们想要的）；由部署者**自己建 + 手动绑定**，
-  项目只固定「预设名字」：D1 `kingcola-db` → 别名 `DB`；KV `CONFIG_KV` → 别名 `CONFIG_KV`；
-  R2 `kingcola-files` → 别名 `FILES`（**R2 按桶名绑定，没有 ID 要填**）。
-  名字/别名表与 6 个密钥名写在 **README「部署 → 1. 自己创建云资源」**（`wrangler.toml` 注释里也标了别名）。
+- **云资源绑定约定（用户 2026-09-29 口径，改过两轮，以这版为准）**：**首次部署自动创建 D1 / KV / R2** ——
+  `wrangler.toml` 里 D1 的 `database_id` 与 KV 的 `id` **故意留空**（wrangler 按 `database_name` 找、找不到就建；
+  KV 没有名字字段，名字由 wrangler 定），R2 由 `scripts/ci-deploy.mjs` 探测后决定「建」还是「降级」。
+  **只有想复用已有资源**才把 ID 填进对应段落（填了就不再自动创建）；
+  ⚠️ **绝不要写假占位符** —— `database_id` / `id` 会被原样发给 API，填 `REPLACE_WITH_...` 会让整个部署失败
+  （撞过 `KV namespace ... is not valid`）。预设名字/别名：D1 `kingcola-db`→`DB`、R2 `kingcola-files`→`FILES`、
+  KV 绑定名 `CONFIG_KV`；命名表与 6 个密钥名在 **README「部署」**（`wrangler.toml` 注释里也标了别名）。
   ⚠️ 绑定以 `wrangler.toml` 为准，别只在面板 Bindings 里绑（下次部署会被覆盖；`keep_bindings` 在 wrangler 4.137 里不存在，只有 `keep_vars`）。
+- **部署入口是 `node scripts/ci-deploy.mjs`**（`npm run deploy` 与 Workers Builds 的 Deploy command 都用它）：
+  先 `wrangler r2 bucket list` 探测 R2，能用就原样部署；**不能用就临时剔掉 `[[r2_buckets]]` 再部署**（自动降级）。
+  `FORCE_NO_R2=1` 可强制降级、`--dry-run` 本地演练。
+  ⚠️ 因此 **`wrangler.toml` 里的 `[[r2_buckets]]` 绝不能手动删**（`wrangler dev` 靠它模拟本地 R2 桶，
+  本地开发与 `scripts/smoke-api.ps1` 的 8a/8b 都依赖它）；没有 R2 的账号靠这个脚本照样能部署成功。
 - **本机日志已在 `.gitignore` 里**（`dev.out`/`dev.err`/`dev-server.out`/`dev-server.err` 与 `.codebuddy/*.out|err`）；
   `dev-server.err`/`dev.err`/`dev.out` 曾被误提交，2026-09-29 已 `git rm --cached` 取消跟踪（文件仍在本地）。
   **别再 `git add -A` 把这类运行产物提交进去**（`dev-server.log` 之类走 `*.log` 已被忽略）。
