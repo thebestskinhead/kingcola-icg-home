@@ -1,89 +1,45 @@
 # kingcola（拾光工作室官网）· 长期记忆
 
-> 只记跨会话仍成立的事实；日流水写 `YYYY-MM-DD.md`（细节、过程、踩坑全过程都在日文件里）。
-> 整理：2026-09-27 第四次压缩（只留决策与坑，机制细节以代码为准）。
+> 只记跨会话仍成立的事实；日流水写 `YYYY-MM-DD.md`（过程与踩坑全过程在日文件里）。
+> 整理：2026-09-29 第五次压缩（合并重复、去过程，只留决策与坑；机制细节以代码为准）。
 
 ## 定位与架构
 学生工作室官网 + 内部后台：Vite React（`src/`）+ Cloudflare Workers（`worker/`，`run_worker_first = ["/api/*"]`）。前台只读，写操作收敛到 `/admin/*`。
 - **`shared/` 是前后端唯一契约源**：types / resources / identity / qr（冻结）/ runtime / mail / recruit / sso / site / seed / storage。
-- **`shared/resources.ts` 一份元数据同时驱动 Worker 的 SQL·校验与后台的表格·表单**：`type`(text/textarea/select/switch/number/date/tags/image)、`required`、`showWhen`/`requiredWhen`、`optionsSource`、`optionLabels`、`preview`、`inList`/`compact`、`hint`、`autoId`、`defaultValue`，以及**列表层**的 `groups`（按某 select 字段拆页签，成员=在组/已毕业）与 `bulk`（勾选后的批量动作）。新增内容类型只加一条。
-- **后台内容页只有一份 `ContentPage`**：`def.groups` 拆页签时，**列集合跟着页签走**（复用 `showWhen`：`isFieldActive(field, { [groups.key]: 当前页签 })`）→「在组」里根本看不到「毕业去向」；新增时用 `prefillOnCreate` 预置分组字段。跨记录的批量动作**不走通用 CRUD**，见 `worker/routes/admin-members.ts`（`POST /api/admin/members/graduate` 幂等（只把状态改成 alumni）、`POST /api/admin/members/destination-mail`）。
-- **批量动作分两类**（`ResourceBulkDef`）：① 简单动作（`confirmTitle`/`confirmNote`，需先勾人；如「发送去向征集」）走通用确认框；
-  ② `wizard: true` 的动作走专属两步向导 —— 目前只有「**到了说再见的时候了**」（`src/admin/GraduateWizard.tsx`，文案是用户定的）：
-  `preselect: 'latest-group'` 让它**不用先勾人**（动作条一直显示），进去自动勾好**最晚一届**的在组成员并可改，
-  第二步回显「送走几位 · 哪几届（按加入年份）」+ 是否寄信，主按钮文案随勾选变化（「寄出这封信，祝他们前程似锦」/「就到这儿，送他们毕业」），
-  成功后才切到第三步结果屏。⚠️ 向导是**成员专用**组件，里面直接用了 `status/joinYear/name/title/email` 这些字段名。
-- **读写口径**：读 `columnList(def)` 全列（`rowToEntity` 只映射 `def.fields`，**不含 createdAt/updatedAt**）；创建 = `defaultEntity` 补默认值后整行 INSERT 并回读整行；更新只写提交上来的列；校验唯一口径 `validateEntity(def, input, ctx)`；互斥字段用 `requiredWhen` + `showWhen` 同条件。
-- **主键两制**：默认文本主键 `randomId`；`projects` 用 `autoId:true` 自增整数（查库前 `normalizeId()`）。
+- **`shared/resources.ts` 一份元数据同时驱动 Worker 的 SQL·校验与后台表格·表单**：`type`(text/textarea/select/switch/number/date/tags/image)、`required`、`showWhen`/`requiredWhen`、`optionsSource`、`optionLabels`、`preview`、`inList`/`compact`、`hint`、`autoId`、`defaultValue`，以及列表层的 `groups`（按 select 字段拆页签）与 `bulk`。新增内容类型只加一条。
+- **后台内容页只有一份 `ContentPage`**：`def.groups` 拆页签时列集合跟着页签走（`isFieldActive(field, { [groups.key]: 当前页签 })`，在组里看不到毕业去向），新增用 `prefillOnCreate` 预置分组字段。跨记录批量动作不走通用 CRUD：`worker/routes/admin-members.ts`（`POST /api/admin/members/graduate` 幂等只改 status、`POST /api/admin/members/destination-mail`）。
+- **批量动作两类**（`ResourceBulkDef`）：① 简单动作（`confirmTitle`/`confirmNote`，需先勾人）走通用确认框；② `wizard:true` 走专属两步向导 —— 目前只有「到了说再见的时候了」（`src/admin/GraduateWizard.tsx`，文案用户定的）：`preselect:'latest-group'` 让它不用先勾人，进去自动勾最晚一届在组成员，第二步回显「送走几位 · 哪几届」+ 是否寄信，成功后才切结果屏。⚠️ 该向导是成员专用组件，里面直接用 `status/joinYear/name/title/email` 字段名。
+- **读写口径**：读 `columnList(def)` 全列（`rowToEntity` 只映射 `def.fields`，不含 createdAt/updatedAt）；创建 = 补默认值整行 INSERT 后回读；更新只写提交上来的列；校验唯一口径 `validateEntity(def, input, ctx)`；互斥字段用 `requiredWhen` + `showWhen` 同条件。
+- **主键两制**：默认文本 `randomId`；`projects` 用 `autoId:true` 自增整数（查库前 `normalizeId()`）。
 - **前台是真实路由**：`PAGE_PATHS` 在 shared/types.ts；新增板块改四处（PageKey → LABELS/PATHS → App.tsx Routes → Header NAV_ORDER）。
 - 接口信封 `{ ok, data }` / `{ ok, error:{code,message} }`，前端 `apiRequest` 解包。**D1 唯一事实源**；KV 只做配置缓存（写 D1 后删 KV）。
-- 站点文案来自 `site_config['site']`（JSON 合并、无迁移）；新增字段改三处：shared/types.ts → SettingsPage → section；列表解析在 `shared/site.ts`。
-- 管理员存 D1 `admin_users`（PBKDF2）；`RECOVERY_TOKEN` 灾备。运维文档 `docs/HANDOVER.md`。
-  **首次初始化有页面引导**：`/admin` 登录页读公开接口 `/api/config/runtime` 的 `initialized`（= `countAdmins() > 0`），
-  空库时显示「首次初始化」卡片（初始化口令 + 用户名 + 密码，建完直接进后台），已初始化则是登录表单 +
-  「忘记密码用初始化口令重置」的说明；两端密码下限都是 8 位（`LoginPage` 的 `MIN_PASSWORD` ↔ worker 的 `minPasswordLength()`）。
+- 站点文案来自 `site_config['site']`（JSON 合并、无迁移）；新增字段改三处：shared/types.ts → SettingsPage → section；解析在 `shared/site.ts`。
+- 管理员存 D1 `admin_users`（PBKDF2）；`RECOVERY_TOKEN` 灾备；运维文档 `docs/HANDOVER.md`。**首次初始化有页面引导**：`/admin` 登录页读 `/api/config/runtime` 的 `initialized`（= `countAdmins()>0`），空库显示「首次初始化」卡片，已初始化则是登录表单 + 口令重置说明；两端密码下限都是 8 位（`LoginPage.MIN_PASSWORD` ↔ worker `minPasswordLength()`）。
 
 ## 环境与命令
-- PATH 无 node/npm：`Import-Module D:\usexxx\use-xxx.psm1; use-node 22.23.2`（Vite 7 要求 22.23.2）；npm 加 `--registry=https://registry.npmmirror.com`（原镜像已失效）。
+- PATH 无 node/npm：`Import-Module D:\usexxx\use-xxx.psm1; use-node 22.23.2`（Vite 7 要求 22.23.2；**每开一个新 shell 都要先做**）；npm 加 `--registry=https://registry.npmmirror.com`。
 - 含中文的 `.ps1` 必须 `pwsh`（5.1 编码错乱）。wrangler 4.137.0。本地密钥 `.dev.vars`（gitignore），本地管理员 `admin` / `kingcola-dev-2026`。
-- 命令：本地验收 `npm run local`（8787）/ 开发 `dev:api`+`dev`（5175）/ `typecheck`·`build`·`deploy` / `db:migrate:local|:remote`。
-- 自检：`scripts/smoke-api.ps1`、`smoke-applications.ps1`、`probe-local.ps1`。
-- **线上（2026-09-29 首次部署完成）**：入口 **https://kingcola.002038.xyz**（自定义域；域名托管在同一账号）。
-  ⚠️ `*.workers.dev` 在国内**被 DNS 污染**（解析到 31.13.94.23 这类 Facebook IP），完全不可用 —— 所以
-  `wrangler.toml` 里必须有 `[[routes]] pattern = "kingcola.002038.xyz"` + `custom_domain = true`，
-  否则下次 Git 构建部署会把域名摘掉（配置是绑定的唯一事实源）；另加了 `workers_dev = false`。
-  - Worker `kingcola-icg-home`；D1 `kingcola-db`（`c6f303e8-74f8-4234-b3a7-7f38263e717f`）；
-    KV `kingcola-icg-home-config-kv`（`f62ab355096b41eeab512132ed0f6e2f`，名字由 wrangler 按 Worker 名生成）；
-    R2 `kingcola-files`（复用 CI 早先建好的）。**D1/KV 由 CLI 部署时自动创建，ID 没有回写进 wrangler.toml**。
-  - 全部 12 个迁移已在远程跑过（`scripts/migrate.ps1 -Target remote` 全 OK）。
-  - 已写密钥：`SESSION_SECRET` / `STUDENT_SESSION_SECRET` / `RECOVERY_TOKEN`（值不记录）；
-    `SSO_CLIENT_SECRET` / `QR_SIGN_SECRET` / `SMTP_PASSWORD` **尚未配** → 现在 `ssoEnabled:false`、邮件未接通。
-  - 管理员靠 `/admin` 的「首次初始化」建（`/api/config/runtime` 的 `initialized:false` 表示还没建）。
-  - ⚠️ `wrangler dev --remote` **不支持 ID-less 绑定**（报 `CONFIG_KV bindings must have an "id" field`），
-    要远程调试得临时补上 ID（本地普通 `wrangler dev` 不受影响）。
-- **远程仓库**：remote 名 `kingcalo-icg-home` → `https://github.com/thebestskinhead/kingcola-icg-home.git`（GPL-3.0）。
-  本地与远程原本是**两条互不相关的历史**（远程只有 GitHub 建仓时那份 LICENSE 的 `Initial commit` 2085bc1），
-  2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（得到 `e223097`）后推送成功。
-  ⚠️ **绝不能强推 main** —— 本地历史里没有 LICENSE 文件，强推会把 GPL-3.0 许可证从仓库上抹掉。
-  `main` **没有设 upstream**，推送要写全：`git push kingcalo-icg-home main`。
-  **Worker 名已定为 `kingcola-icg-home`**（与面板项目名/仓库名一致）—— 面板项目名取自仓库名，
-  `wrangler.toml` 的 `name` 与它不一致时，Git 构建会打 `Failed to match Worker name` 警告、用 CI 的名字覆盖并自动开 PR。
-- **云资源绑定约定（用户 2026-09-29 口径，改过两轮，以这版为准）**：**首次部署自动创建 D1 / KV / R2** ——
-  `wrangler.toml` 里 D1 的 `database_id` 与 KV 的 `id` **故意留空**（wrangler 按 `database_name` 找、找不到就建；
-  KV 没有名字字段，名字由 wrangler 定），R2 由 `scripts/ci-deploy.mjs` 探测后决定「建」还是「降级」。
-  **只有想复用已有资源**才把 ID 填进对应段落（填了就不再自动创建）；
-  ⚠️ **绝不要写假占位符** —— `database_id` / `id` 会被原样发给 API，填 `REPLACE_WITH_...` 会让整个部署失败
-  （撞过 `KV namespace ... is not valid`）。预设名字/别名：D1 `kingcola-db`→`DB`、R2 `kingcola-files`→`FILES`、
-  KV 绑定名 `CONFIG_KV`；命名表与 6 个密钥名在 **README「部署」**（`wrangler.toml` 注释里也标了别名）。
-  ⚠️ 绑定以 `wrangler.toml` 为准，别只在面板 Bindings 里绑（下次部署会被覆盖；`keep_bindings` 在 wrangler 4.137 里不存在，只有 `keep_vars`）。
-- **部署入口是 `node scripts/ci-deploy.mjs`**（`npm run deploy` 与 Workers Builds 的 Deploy command 都用它）：
-  先 `wrangler r2 bucket list` 探测 R2，能用就原样部署；**不能用就临时剔掉 `[[r2_buckets]]` 再部署**（自动降级）。
-  `FORCE_NO_R2=1` 可强制降级、`--dry-run` 本地演练。
-  ⚠️ 因此 **`wrangler.toml` 里的 `[[r2_buckets]]` 绝不能手动删**（`wrangler dev` 靠它模拟本地 R2 桶，
-  本地开发与 `scripts/smoke-api.ps1` 的 8a/8b 都依赖它）；没有 R2 的账号靠这个脚本照样能部署成功。
-- ⚠️⚠️ **PBKDF2 迭代数受 Workers CPU 预算硬约束（2026-09-29 线上踩坑）**：本项目账号是**免费版**，
-  `worker/lib/crypto.ts` 原来是 **150 000** 次 → **线上必挂**：登录 / 初始化管理员这类要算哈希的接口返回
-  `500 服务异常`（`INTERNAL_ERROR`），而健康检查/内容/运行时配置等纯读接口全部正常 → 极容易误判成数据库或绑定问题。
-  二分实测（该账号）：4 万 / 6 万 / 10 万次都通过，**15 万次必挂** → 已改成 **50 000**（约 2 倍余量）并部署验证
-  （bootstrap 200 + login 200）。**已存哈希自带迭代数**，改常量不会让旧密码失效；但旧哈希若本身超预算仍会 500，用 bootstrap 重置一次即可。
-  想恢复 OWASP 建议的 60 万次：先升级 Workers Paid（CPU 上限大幅提高）。
-- ⚠️ **`wrangler secret put` 千万别用管道喂值**：`'值' | wrangler secret put NAME` 会把**换行一起存进去**，
-  之后无论怎么手输都对不上（本项目踩过：`/admin` 首次初始化一直报「恢复口令不正确」）。
-  脚本化写密钥请用 **`wrangler secret bulk secrets.json`**（JSON 字符串值不带换行）。
-  排查小技巧：bootstrap 是**先验口令、后验密码**，可用「真口令 + 1 位密码」调接口做**非破坏性校验**
-  （`400 WEAK_PASSWORD` = 口令对，`403 INVALID_TOKEN` = 口令错，两种情况都不会建号）。
-- **本机日志已在 `.gitignore` 里**（`dev.out`/`dev.err`/`dev-server.out`/`dev-server.err` 与 `.codebuddy/*.out|err`）；
-  `dev-server.err`/`dev.err`/`dev.out` 曾被误提交，2026-09-29 已 `git rm --cached` 取消跟踪（文件仍在本地）。
-  **别再 `git add -A` 把这类运行产物提交进去**（`dev-server.log` 之类走 `*.log` 已被忽略）。
+- 命令：本地验收 `npm run local`（8787）/ 开发 `dev:api`+`dev`（5175）/ `typecheck`·`build`·`deploy` / `db:migrate:local|:remote`。自检：`scripts/smoke-api.ps1`、`smoke-applications.ps1`、`probe-local.ps1`。
+- **线上（2026-09-29 首次部署完成）**：入口 **https://kingcola.002038.xyz**（自定义域，域名托管在同一账号）。
+  ⚠️ `*.workers.dev` 在国内**被 DNS 污染**（解析到 31.13.94.23 这类 Facebook IP），完全不可用 → `wrangler.toml` 必须有 `[[routes]] pattern="kingcola.002038.xyz"` + `custom_domain=true`，否则下次 Git 部署会摘掉域名（配置是绑定的唯一事实源）；另加了 `workers_dev=false`。
+  - Worker `kingcola-icg-home`；D1 `kingcola-db`（`c6f303e8-74f8-4234-b3a7-7f38263e717f`）；KV `kingcola-icg-home-config-kv`（`f62ab355096b41eeab512132ed0f6e2f`）；R2 `kingcola-files`。**D1/KV 由 CLI 部署时自动创建，ID 没回写进 wrangler.toml**。12 个迁移已在远程跑过。
+  - 已写密钥：`SESSION_SECRET` / `STUDENT_SESSION_SECRET` / `RECOVERY_TOKEN`（值不记录）；`SSO_CLIENT_SECRET` / `QR_SIGN_SECRET` / `SMTP_PASSWORD` **尚未配** → `ssoEnabled:false`、邮件未接通。管理员靠 `/admin` 首次初始化建。
+  - ⚠️ `wrangler dev --remote` 不支持 ID-less 绑定（报 `CONFIG_KV bindings must have an "id" field`）；本地普通 `wrangler dev` 不受影响。
+- **远程仓库**：remote 名 `kingcalo-icg-home` → `https://github.com/thebestskinhead/kingcola-icg-home.git`（GPL-3.0）。本地与远程原是两条互不相关的历史，2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（`e223097`）后推送成功。⚠️ **绝不能强推 main**（本地历史没有 LICENSE，强推会抹掉 GPL-3.0）。`main` 没设 upstream，推送写全 `git push kingcalo-icg-home main`。**Worker 名定为 `kingcola-icg-home`**（与面板项目名/仓库名一致），不一致时 Git 构建会打 `Failed to match Worker name` 警告、用 CI 名字覆盖并自动开 PR。
+- **云资源绑定约定（2026-09-29 用户口径，以此为准）**：**首次部署自动创建 D1 / KV / R2** —— `wrangler.toml` 里 D1 的 `database_id` 与 KV 的 `id` **故意留空**（wrangler 按 `database_name` 找、找不到就建；KV 名字由 wrangler 定），R2 由 `scripts/ci-deploy.mjs` 探测后决定建还是降级。**只有想复用已有资源**才填 ID（填了就不再自动创建）；⚠️ 绝不要写假占位符（`REPLACE_WITH_...` 会让整个部署失败，撞过 `KV namespace ... is not valid`）。预设名：D1 `kingcola-db`→`DB`、R2 `kingcola-files`→`FILES`、KV 绑定名 `CONFIG_KV`；命名表与 6 个密钥名在 **README「部署」**。⚠️ 绑定以 `wrangler.toml` 为准，别只在面板 Bindings 里绑；`keep_bindings` 在 wrangler 4.137 不存在，只有 `keep_vars`。
+- **部署入口 `node scripts/ci-deploy.mjs`**（`npm run deploy` 与 Workers Builds 的 Deploy command 都用它）：先 `wrangler r2 bucket list` 探测 R2，能用就原样部署，**不能用就临时剔掉 `[[r2_buckets]]` 再部署**（自动降级）。`FORCE_NO_R2=1` 强制降级、`--dry-run` 演练。⚠️ 因此 `wrangler.toml` 的 `[[r2_buckets]]` 绝不能手动删（`wrangler dev` 靠它模拟本地 R2 桶，本地开发与 smoke 8a/8b 都依赖）。
+- ⚠️⚠️ **PBKDF2 迭代数受 Workers CPU 预算硬约束**：本项目账号是免费版，`worker/lib/crypto.ts` 原 150 000 次 → 线上必挂（登录/初始化返 `500 服务异常`，纯读接口全正常，极易误判成数据库/绑定问题）。实测 4 万/6 万/10 万通过、**15 万必挂** → 已改成 **50 000** 并部署验证。**已存哈希自带迭代数**，改常量不会让旧密码失效；旧哈希若本身超预算仍 500，用 bootstrap 重置一次即可。想恢复 60 万次：先升级 Workers Paid。
+- ⚠️ **`wrangler secret put` 千万别用管道喂值**（会把换行一起存进去，之后怎么手输都对不上 —— 本项目踩过「恢复口令不正确」）。脚本化写密钥用 **`wrangler secret bulk secrets.json`**。排查技巧：bootstrap **先验口令、后验密码**，可用「真口令 + 1 位密码」非破坏性校验（`400 WEAK_PASSWORD`=口令对，`403 INVALID_TOKEN`=口令错，都不建号）。
+- **本机日志已在 `.gitignore`**（`dev*.out|err`、`.codebuddy/*.out|err`、`*.log`）；曾被误提交的几个已 `git rm --cached` 取消跟踪（文件仍在本地）。**别再 `git add -A`** 把运行产物提交进去。
 
 ## 多会话并行（重要）
-工作区被多会话并行修改（含本记忆文件）：**动文件前先读当前内容**。提交前逐文件 `git diff`，并用 `git show HEAD:<file> | findstr /C:"符号"` 验证 HEAD 是否自洽 —— 若别人新代码引用的符号不在 HEAD 里（曾出现在 applications.ts / endpoints.ts / index.ts），必须把那批文件一起提交，否则留下**编译不过的 HEAD**。中文提交信息写 UTF-8 文件 + `git commit -F`。
+工作区被多会话并行修改（含本记忆文件）：**动文件前先读当前内容**。提交前逐文件 `git diff`，并用 `git show HEAD:<file> | findstr /C:"符号"` 验证 HEAD 是否自洽 —— 若别人新代码引用的符号不在 HEAD 里（曾出现在 applications.ts / endpoints.ts / index.ts），必须把那批文件一起提交，否则留下**编译不过的 HEAD**。中文提交信息写 UTF-8 文件 + `git commit -F`。杀 8787 上的服务时，`Get-NetTCPConnection` 给的只是 workerd，**父进程 pwsh/npm 也要清**，否则残留进程又抢回端口。
 
 ## 对象存储适配层
 - 契约 `shared/storage.ts`：`StoragePurpose = 'site' | 'applications'`（可各配桶）；配置存 `site_config['storage']`，无迁移。
 - `worker/lib/storage/`：`registry.ts` 插件表（内置 `r2` 与 `s3`——自实现 SigV4 预签名，兼容 R2 S3 API/MinIO/COS/OSS，无 SDK）；`index.ts` 的 `getStorage(env, purpose)` 门面。
-- 直连：s3 预签名 GET/PUT；r2 不支持 → 退化 KV 一次性 token + `/api/files/direct/:token`（用后即焚）。签发口 `POST /api/admin/storage/direct-token`。
-- `secretAccessKey` 落库但**永不下发**（只回 `secretConfigured`；保存时空值 = 保留旧值）；`resolveFileRef()` 能反解 `/api/files/<key>` 与 publicBase 直链；`applications/` 前缀私有（`GET /api/files/*` 一律 404）。
+- 直连：s3 预签名 GET/PUT；r2 不支持 → 退化 KV 一次性 token + `/api/files/direct/:token`（用后即焚）。签发口 `POST /api/admin/storage/direct-token`。后台存储页只有配置/连通性探测/直连签发，**没有文件浏览器，也没有单独的「删文件」接口**。
+- `secretAccessKey` 落库但**永不下发**（只回 `secretConfigured`；保存时空值 = 保留旧值）；`resolveFileRef()` 能反解 `/api/files/<key>` 与 publicBase 直链；`applications/` 前缀私有（`GET /api/files/*` 一律 404/要求管理员会话）。
 
 ## 招新（以 `shared/recruit.ts` + `worker/lib/recruit-cycle.ts` 为准）
 - 入口 `/admin/recruit`（四视图：流程/名单/邮件日志/设置，共用 `useRecruitAdmin.ts`；纯函数与常量放 `recruit-ui.ts`，**只放非组件**，否则踩 react-refresh）。
@@ -91,27 +47,22 @@
 - **状态 = `stage` + `result` 两列**：stage ∈ apply/written/interview/defense/onboard；result ∈ ''(待定)/attended/passed/failed/absent/declined/withdrawn；中文标签由 `applicationLabel()` 派生、**不入库**；阶段只相邻推进或退一步。**整届没有时间字段、也没有场次**；所有动作集中在 `RECRUIT_ACTION_META`（from/to/needsSelection/文案），后台按钮文案与可点性同源（不会「界面能点但后端拒绝」）。缺考在「结束笔试/面试/答辩」里一次标完。服务器在 UTC，**绝不能** `new Date('2026-09-25T09:00')`（差 8 小时）。
 - ⚠️ **已作废、别再引入**：`recruit-auto.ts`、`/api/admin/recruit/auto`、`[triggers] crons`、`recruitPhase()`/时间窗/`site.recruitOpen`、周期的 `archives`、`shared/time.ts`、`recruit_sessions`。
 - 周期配置存 D1 `site_config['recruit']`（刻意不放 runtime：模板正文不该下发给访客）；读时 `mergeCycle` 逐字段取值并校验 state。报名通道只由 `isApplyOpen(state)` 决定。
-- **邮件九模板**（招新的八条 + `graduation_destination`「毕业去向征集」—— 后者收件人是**成员**、由成员管理里的「批量毕业」发出，**暂寄居在招新模板页**，用户计划之后把模板管理整体迁出）：变量仅 `{name}{studentId}{cycleName}{writtenGroup}{interviewGroup}{probationGroup}{formalGroup}{inviteLink}{destinationLink}{rejectReason}{studio}{contactEmail}{contactAddress}`；**缺考与未过初筛一律不发信**；发信失败不阻断流转；只按目标状态决定发哪封 → 改判不会误发。⚠️ 群号短名（`groups.written`）≠ 模板令牌（`{writtenGroup}`），统一走 `cycleMailVars(cycle)`；**模板变量别手写键名**（曾出过「预览骗人」）。⚠️ 「可补发」清单是 `RECRUIT_APPLICATION_MAIL_KINDS`（= 全部模板 − 毕业去向征集），名单的下拉与 `isApplicationNoticeKind()` 都用它，别再直接用 `RECRUIT_MAIL_KINDS`。
-- **材料审核**（`0010`）：`applications` 加 `material_status`(''待审/approved/rejected)+`material_reason`+`material_reviewed_at`；报名阶段可逐个/批量「通过·驳回」（驳回必写理由并**自动逐人发信**）；**重传材料自动回到待审核**；只在 apply/apply_review 可审；**未过审不能被勾进笔试**（`MATERIAL_NOT_APPROVED`，只作用于报名→笔试）。
+- **邮件九模板**（招新八条 + `graduation_destination`「毕业去向征集」—— 收件人是**成员**、由成员管理的批量毕业发出，**暂寄居在招新模板页**，计划日后整体迁出）：变量仅 `{name}{studentId}{cycleName}{writtenGroup}{interviewGroup}{probationGroup}{formalGroup}{inviteLink}{destinationLink}{rejectReason}{studio}{contactEmail}{contactAddress}`；**缺考与未过初筛一律不发信**；发信失败不阻断流转；只按目标状态决定发哪封 → 改判不会误发。⚠️ 群号短名（`groups.written`）≠ 模板令牌（`{writtenGroup}`），统一走 `cycleMailVars(cycle)`；**模板变量别手写键名**（出过「预览骗人」）。⚠️ 「可补发」清单是 `RECRUIT_APPLICATION_MAIL_KINDS`（= 全部模板 − 毕业去向征集），名单下拉与 `isApplicationNoticeKind()` 都用它，别再直接用 `RECRUIT_MAIL_KINDS`。
+- **材料审核**（`0010`）：`applications` 加 `material_status`(''待审/approved/rejected)+`material_reason`+`material_reviewed_at`；报名阶段可逐个/批量「通过·驳回」（驳回必写理由并自动逐人发信）；**重传材料自动回到待审核**；只在 apply/apply_review 可审；**未过审不能被勾进笔试**（`MATERIAL_NOT_APPROVED`，只作用于报名→笔试）。
 - **报名截止后的进度入口**：`gate=closed` 时未登录者看到「报名已截止」+「扫码登录，查看我的进度」；登录后可见审核状态与驳回理由，报名未结束可直接重传（`POST /api/applications?replace=true`，**`replace` 只认 query 参数**）。
 - **签到 = 阶段 + 凭证**：`recruit_checkin_tokens` 只绑 `stage`(written/interview/defense)+`expires_at`+`revoked_at`，**签发新码自动作废该阶段旧码**；签到页只有 `/checkin/<token>`。⚠️ `QR_SIGN_SECRET` 是 SSO applyToken 验签密钥，**不是**签到码密钥。
-- **`close_cycle`**：未确认的记 absent → 导出 CSV 到 `applications/archives/` → 存档信息进周期 → 删报名表 → 清空报名与发信日志 → 写 `closedAt`；**对象存储没接通就拒绝关闭**。
+- **`close_cycle`**：未确认的记 absent → 导出 CSV 到 `applications/archives/` → 存档信息进周期 → 删报名表 → 清空报名与发信日志 + 签到凭证 → 写 `closedAt` → 回 dormant；**对象存储没接通就拒绝关闭**。
 - **`reset_apply`**：只在 apply/apply_review 可用；删光报名记录+报名表+发信日志（**跳过 `RECRUIT_ARCHIVE_SCOPE`**，别误删往届存档），state 退回 `prepare`；**不导出存档、不因存储不可用拒绝**；返回 `cleaned{applications,files,filesFailed}`。
-- **邀请函转正** `POST /api/applications/invite/:token`（凭证即密权，14 天、只能确认一次）→ 写 `members` 并回记 `memberId`；**头像必传**（`/invite/:token/avatar`，同一凭证、免登录），确认时只接受本站 `avatars/` 前缀（拒任意外链）；「负责方向」必填；三个入口共用 `pendingInviteError()`。
+- **邀请函转正** `POST /api/applications/invite/:token`（凭证即密权，14 天、只能确认一次）→ 写 `members` 并回记 `memberId`；**头像必传**（`/invite/:token/avatar`，同凭证、免登录），确认时只接受本站 `avatars/` 前缀（拒任意外链）；「负责方向」必填；三个入口共用 `pendingInviteError()`。
 - **上传公共实现** `worker/routes/uploads.ts: receiveImage(ctx, resolveScope)`（multipart → 体积 → 魔数 → 落站点存储，**不含鉴权**）；管理员口读表单 `scope`，邀请函**硬编码 `avatars`**。
-- **毕业去向填写页**（`/graduate/:token`，凭证即密权、免登录）：成员管理「批量毕业」或「发送去向征集」时签发 `members.destination_token`（**签发即覆盖旧的**；提交后清空 → 一条只能用一次；**没有过期时间**，因为可能几个月后才回填）。页面：`src/sections/GraduateSection.tsx`；接口 `GET|POST /api/members/destination/:token`（`worker/routes/members.ts` + `lib/member-destination.ts`），**裸 SQL**，因为 token 绝不能进 `shared/resources.ts` 的字段表（那会让公开 bootstrap 把它下发出去）。
-  ⚠️ 因此 `destination` 也**不再是 `requiredWhen`**：它是异步由本人填的，强制必填会让管理员连改头像都被挡住。
-- ⚠️ **没有「毕业年份」字段**（用户 2026-09-29 明确：「不需要设置毕业年份，使用加入年份即可」）：
-  届别就是**加入年份**（`joinYear`），别再引入 `graduation_year` / `Member.graduationYear` / 向导里的年份输入。
-  `POST /api/admin/members/graduate` 只把 `status` 改成 `alumni`（幂等，无 `year` 参数）；
-  界面上「哪一届」全由 `joinYear` 分组与回显（向导第一步按加入年份分届、第二步回显选中的那几届）。
-  曾短暂加过 `0013_member_graduation_year.sql` + `year` 入参，**当天已整体撤回**（迁移文件删除、本地列 DROP）。
+- **毕业去向填写页**（`/graduate/:token`，凭证即密权、免登录）：成员管理「批量毕业」或「发送去向征集」时签发 `members.destination_token`（**签发即覆盖旧的**；提交后清空 → 一条只能用一次；**没有过期时间**）。页面 `src/sections/GraduateSection.tsx`；接口 `GET|POST /api/members/destination/:token`（`worker/routes/members.ts` + `lib/member-destination.ts`），**裸 SQL**，因为 token 绝不能进 `shared/resources.ts` 字段表（那会让公开 bootstrap 把它下发出去）。⚠️ 因此 `destination` 也**不再是 `requiredWhen`**（由本人异步填，强制必填会让管理员连改头像都被挡住）。
+- ⚠️ **没有「毕业年份」字段**（2026-09-29 用户明确：届别就是**加入年份** `joinYear`）：别再引入 `graduation_year`/`Member.graduationYear`/向导年份输入。`graduate` 接口只把 `status` 改成 `alumni`（幂等，无 `year` 参数）；界面「哪一届」全由 `joinYear` 分组回显。曾短暂加过 `0013_member_graduation_year.sql` + `year` 入参，**当天已整体撤回**。
 - **表/文件**：`applications` + `application_mails` + `recruit_checkin_tokens`；**已有数据的库必须单独**执行新迁移 SQL。报名表与存档都在 `applications/` 前缀（私有）；下载 `GET /api/admin/applications/:id/file`，后补/替换 `POST .../:id/file`。
-- 自检 `scripts/smoke-applications.ps1`（**109 项**，需 8787）。**别把输出接到 `Select-Object -First N`**（上游 pwsh 会继续跑，两条自检互相推进状态机）。⚠️ 该脚本从「关闭本届」跑到底 → **会归档并清空本地报名数据**。
+- 自检 `scripts/smoke-applications.ps1`（109 项，需 8787）。**别把输出接到 `Select-Object -First N`**（上游 pwsh 会继续跑，两条自检互相推进状态机）。⚠️ 该脚本从「关闭本届」跑到底 → **会归档并清空本地报名数据**；跑前先杀掉手动起的服务。
 
 ## 邮件（SMTP）
 - 契约 `shared/mail.ts`；配置存 `site_config['runtime'].mail`。
-- **密码存 D1**：`SESSION_SECRET` 经 HKDF 派生密钥 AES-GCM 加密成 `enc$<iv>.<密文>`；`SMTP_PASSWORD` 仅兜底（库里优先）。下发一律剥离密码，后台只拿 `mailPasswordSource`；保存三态：**不带 password 键=不改 / 空串=清除 / 有值=更新**；**KV 存的是密文版**。
+- **密码存 D1**：`SESSION_SECRET` 经 HKDF 派生密钥 AES-GCM 加密成 `enc$<iv>.<密文>`；`SMTP_PASSWORD` 仅兜底（库里优先）。下发一律剥离密码，后台只拿 `mailPasswordSource`；保存三态：**不带 password 键=不改 / 空串=清除 / 有值=更新**；KV 存的是密文版。
 - `worker/lib/smtp.ts`（cloudflare:sockets，465 TLS / 587 STARTTLS → startTls 后必须重建 reader/writer 再 EHLO）；`worker/lib/mailer.ts`（RFC 2047 + Base64 折行）；`POST /api/admin/mail/test`（400=配置错 / 502=发送失败）。
 - 25 端口被封；生产不能连 localhost/私有网段（本地 miniflare 可以）；`import { connect, type Socket } from 'cloudflare:sockets'` 会 TS2305（Socket 是全局类型）。
 
@@ -121,12 +72,12 @@
 ## 前台约定
 - `slides`：type='text'（kicker/title/subtitle/cta，showWhen）/ 'image'（只有图铺满）；`HERO_HEIGHT` 常量两种类型共用高度。导航：首页/新闻/项目/成员/加入我们。
 - **成员「方向 / 角色」字典**（取代原 `MEMBER_ROLES`）：契约 `shared/identity.ts` → 存储 `worker/lib/identity-config.ts`（KV `member_roles` 优先，D1 `site_config['memberRoles']` 是事实源，写 D1 后删 KV）→ 接口 `GET|PUT /api/admin/member-roles`（PUT **整份覆盖**；移除「还有人在用」的方向需 `confirmRemoval:true`，否则 409 `ROLE_IN_USE`；停用不算移除）→ 页面 `/admin/roles`。
-  **刻意存中文名、不做稳定 id**：改名单只影响之后新增的记录，历史值原样保留、不回写 → 删改方向零迁移（`members.title` 自 0001 起是 TEXT）；代价是没法一键统一改历史叫法。
+  **刻意存中文名、不做稳定 id**：改名单只影响之后新增的记录，历史值原样保留 → 删改方向零迁移（`members.title` 自 0001 起是 TEXT）；代价是没法一键统一改历史叫法。
   **边界**：非学生方向**永不允许** `selectableBySelf`（validate 强制纠正）；邀请函只下发 `selfSelectableLabels()`，`confirmInvite` 再独立校验 → 学生写不成「指导老师」。
   字段侧 `optionsSource:'memberRoles'`（`options` 只是兜底，白名单由 `validateEntity(def, input, ctx.memberRoles)` 注入）；**更新记录时必须把原值并进白名单**（`admin-content.ts: validationContext()` 与 `ContentPage.tsx: resolvedFields` 必须同规则），否则改名后老记录连电话都改不了。
-- 成员卡片：`direction`=负责方向（在组必填 `requiredWhen`）、`destination`=毕业去向（**不设必填**，由本人异步填，可为空）；卡片取 `destination || direction` 兜底；头像为空用姓名首字；`homepageUrl` 非空时显示「点击进入个人主页」（`homeHref()` 补 `https://`）。
+- 成员卡片：`direction`=负责方向（在组必填 `requiredWhen`）、`destination`=毕业去向（不设必填）；卡片取 `destination || direction` 兜底；头像为空用姓名首字；`homepageUrl` 非空时显示「点击进入个人主页」（`homeHref()` 补 `https://`）。
 - 上传：`POST /api/admin/uploads`（魔数嗅探）；`UPLOAD_IMAGE_LIMITS`（avatars 2MB / slides 50MB / 默认 2MB）。
-- 项目页 `ProjectsSection`：按年份分组、`sm:grid-cols-2`；卡片 `flex flex-col` + 描述 `flex-1`（grid 默认 stretch → 同行等高、底部对齐，**别改成 `items-start`**，否则展开时同行会长短不一）。荣誉仍是**单个字符串** `honor`（数据侧不改，后台提示「；」分隔），前端 `splitHonors` 拆成逐条 + `divide-y` 隔断，**超过 2 条**才出现下三角「展开全部 N 项 / 收起」。卡片底部固定一行链接，文案「**点击跳转到项目仓库**」，`link` 为空则整行不渲染。
+- 项目页 `ProjectsSection`：按年份分组、`sm:grid-cols-2`；卡片 `flex flex-col` + 描述 `flex-1`（grid 默认 stretch → 同行等高、底部对齐，**别改成 `items-start`**）。荣誉是**单个字符串** `honor`（后台提示「；」分隔），前端 `splitHonors` 拆条 + `divide-y`，**超过 2 条**才出现「展开全部 N 项 / 收起」。卡片底部固定一行链接，文案「**点击跳转到项目仓库**」，`link` 为空则整行不渲染。
 
 ## 已知坑
 - `vite.config.ts` base 必须 `'/'`（后台多级路由，`'./'` 深层刷新 404）。本机 3000/5173 被 IDE 占用，前端固定 5175 + strictPort；wrangler dev 只听 IPv4。
@@ -137,4 +88,5 @@
 - `db:migrate:*` 会重跑全部 migrations（靠报错跳过）；有数据的库只单独执行新增文件。
 - `smoke-api.ps1` 异常中断会留下「冒烟测试工作室」配置，跑完到后台确认还原。
 - **React 列表 key 不能取自可编辑内容**：敲一个字 key 就变 → React 重建该行 → 焦点丢失（表现为「编辑框打不了字」）。用与内容无关的本地 id（`MemberRolesPage.tsx` 的 `EditableRole.rowId` 是范例）。
-- 全量 `npx eslint src shared worker` 有 8 个**既有**错误，都在 `src/components/ui/*`（shadcn），与本改动无关。
+- 全量 `npx eslint src shared worker` 有 8 个**既有**错误，都在 `src/components/ui/*`（shadcn），与业务改动无关。
+- `git commit --no-verify=false` 会**静默失败**（非法参数，被 `Select-String` 过滤后看着像没输出）—— 布尔开关不要带 `=值`。
