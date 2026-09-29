@@ -28,6 +28,19 @@
 - 含中文的 `.ps1` 必须 `pwsh`（5.1 编码错乱）。wrangler 4.137.0。本地密钥 `.dev.vars`（gitignore），本地管理员 `admin` / `kingcola-dev-2026`。
 - 命令：本地验收 `npm run local`（8787）/ 开发 `dev:api`+`dev`（5175）/ `typecheck`·`build`·`deploy` / `db:migrate:local|:remote`。
 - 自检：`scripts/smoke-api.ps1`、`smoke-applications.ps1`、`probe-local.ps1`。
+- **线上（2026-09-29 首次部署完成）**：入口 **https://kingcola.002038.xyz**（自定义域；域名托管在同一账号）。
+  ⚠️ `*.workers.dev` 在国内**被 DNS 污染**（解析到 31.13.94.23 这类 Facebook IP），完全不可用 —— 所以
+  `wrangler.toml` 里必须有 `[[routes]] pattern = "kingcola.002038.xyz"` + `custom_domain = true`，
+  否则下次 Git 构建部署会把域名摘掉（配置是绑定的唯一事实源）；另加了 `workers_dev = false`。
+  - Worker `kingcola-icg-home`；D1 `kingcola-db`（`c6f303e8-74f8-4234-b3a7-7f38263e717f`）；
+    KV `kingcola-icg-home-config-kv`（`f62ab355096b41eeab512132ed0f6e2f`，名字由 wrangler 按 Worker 名生成）；
+    R2 `kingcola-files`（复用 CI 早先建好的）。**D1/KV 由 CLI 部署时自动创建，ID 没有回写进 wrangler.toml**。
+  - 全部 12 个迁移已在远程跑过（`scripts/migrate.ps1 -Target remote` 全 OK）。
+  - 已写密钥：`SESSION_SECRET` / `STUDENT_SESSION_SECRET` / `RECOVERY_TOKEN`（值不记录）；
+    `SSO_CLIENT_SECRET` / `QR_SIGN_SECRET` / `SMTP_PASSWORD` **尚未配** → 现在 `ssoEnabled:false`、邮件未接通。
+  - 管理员靠 `/admin` 的「首次初始化」建（`/api/config/runtime` 的 `initialized:false` 表示还没建）。
+  - ⚠️ `wrangler dev --remote` **不支持 ID-less 绑定**（报 `CONFIG_KV bindings must have an "id" field`），
+    要远程调试得临时补上 ID（本地普通 `wrangler dev` 不受影响）。
 - **远程仓库**：remote 名 `kingcalo-icg-home` → `https://github.com/thebestskinhead/kingcola-icg-home.git`（GPL-3.0）。
   本地与远程原本是**两条互不相关的历史**（远程只有 GitHub 建仓时那份 LICENSE 的 `Initial commit` 2085bc1），
   2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（得到 `e223097`）后推送成功。

@@ -17,6 +17,10 @@ name = "kingcola-icg-home"
 main = "worker/index.ts"
 compatibility_date = "2026-09-01"
 
+# 只走下面的自定义域名：`*.workers.dev` 在国内访问不了（DNS 被污染），留着也没用，
+# 而且这一行能让部署日志不再提示「workers_dev 未设置」。
+workers_dev = false
+
 # ---------------------------------------------------------------------------
 # 静态资源：dist/ 由 Vite 构建
 # run_worker_first 只把 /api/* 交给 Worker，其余静态资源由边缘直接返回，
@@ -26,6 +30,15 @@ compatibility_date = "2026-09-01"
 directory = "./dist"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
+
+# ---------------------------------------------------------------------------
+# 自定义域名：`*.workers.dev` 在国内会被 DNS 污染（解析到 31.13.94.23 这类 Facebook 的 IP）
+# 而完全访问不了，所以线上入口必须用自有域名。要求域名（或其父 zone，如 002038.xyz）
+# 托管在同一个 Cloudflare 账号下；不需要自定义域就把这一段删掉（退回 workers.dev）。
+# ---------------------------------------------------------------------------
+[[routes]]
+pattern = "kingcola.002038.xyz"
+custom_domain = true
 
 # ---------------------------------------------------------------------------
 # D1：唯一事实源（内容、管理员、审计、站点配置）
