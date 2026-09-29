@@ -54,7 +54,7 @@ kingcola/
 | 资源 | 名称 | 在哪里看 | 备注 |
 |---|---|---|---|
 | Cloudflare 账号 | （填写主账号邮箱） | dash.cloudflare.com | **必须移交账号或至少移交权限** |
-| Worker | `kingcola` | Workers & Pages | 部署入口 |
+| Worker | `kingcola-icg-home` | Workers & Pages | 部署入口（**名字必须与 `wrangler.toml` 的 `name` 一致**，否则 Git 构建会报 `Failed to match Worker name`） |
 | D1 数据库 | `kingcola-db` | Storage & Databases → D1 | **含全部业务数据，务必勿删** |
 | KV 命名空间 | `CONFIG_KV` | Storage & Databases → KV | 可随时重建，仅为缓存 |
 | R2 存储桶 | `kingcola-files` | R2 | 头像 / 轮播图 / 报名表（报名表仅管理员可下载） |

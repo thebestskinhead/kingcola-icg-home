@@ -7,10 +7,13 @@
 #
 # 本地开发：
 #   npm run dev:api           # wrangler dev（Worker + 静态资源，端口 8787）
-#   npm run dev               # vite dev（端口 3000，/api 反向代理到 8787）
+#   npm run dev               # vite dev（端口 5175，/api 反向代理到 8787）
 # ============================================================================
 
-name = "kingcola"
+# ⚠️ Worker 名必须与 Cloudflare 面板里的项目名一致，否则用 Git 构建部署时会看到
+#    `Failed to match Worker name... Overriding using the CI provided Worker name`（CI 会覆盖，
+#    并自动开一个 PR 想帮你改这里）。面板项目名默认取自仓库名，故与仓库同名。
+name = "kingcola-icg-home"
 main = "worker/index.ts"
 compatibility_date = "2026-09-01"
 
