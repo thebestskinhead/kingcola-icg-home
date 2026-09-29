@@ -41,6 +41,13 @@
     写完**立即生效、不需要重新部署**（2026-09-29 先误判成「要 deploy 才生效」，已在 README / .env 里纠正）。
     `-home2` 现有 5 个密钥（SESSION_SECRET / STUDENT_SESSION_SECRET / RECOVERY_TOKEN / SSO_CLIENT_SECRET / QR_SIGN_SECRET），
     只差 `SMTP_PASSWORD`（只有用户知道）。孤儿 Worker `kingcola-icg-home` 与误建的 `kingcola` 均已删除。
+- ⚠️ **另有一个账号 `czjing`（`738bff0cfc073b8d2647295f8016748b`）访问不了**：用户被邀请进去，但成员资格一直是
+  **`pending`（邀请未接受）** —— `/accounts` 里看不到它，连 `PUT /memberships/{id}`（尝试代为接受）都是 **403**
+  （OAuth 凭据没这个权限，只能用户本人在面板 / 邀请邮件里点接受）。该邀请还**只授权单个 Worker**
+  （user group 名 `kingcola`，scope `com.cloudflare.edge.worker.script.38d6bfc75445412ab02149c1d30fbf37`），
+  **没有 zone / DNS 权限** → 即便接受，在那个账号里也**挂不了自定义域名**（这正是「无法创建域名」的另一个可能来源）。
+  域名 `002038.xyz` 的 zone 在 `Fzqcloud@outlook.com's Account`（539135b7…）下 ——
+  **Cloudflare 的自定义域名必须与 Worker 同账号**，跨账号做不到。
 - **密钥一条命令搞定：`npm run secrets:init`**（`scripts/init-secrets.mjs`，2026-09-29）：缺哪个补哪个 ——
   随机生成 `SESSION_SECRET` / `STUDENT_SESSION_SECRET`（base64url 32B）与 `RECOVERY_TOKEN`（`kc-<18 hex>`，短好手输），
   用**推导出的 Worker 名**写入（`--name` → `WORKER_NAME` → `.env.deploy` → 配置默认名），然后**打印出来**并写进本机 `.env`。
