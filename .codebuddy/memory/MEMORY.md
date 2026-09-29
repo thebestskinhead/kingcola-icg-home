@@ -25,6 +25,11 @@
 - 含中文的 `.ps1` 必须 `pwsh`（5.1 编码错乱）。wrangler 4.137.0。本地密钥 `.dev.vars`（gitignore），本地管理员 `admin` / `kingcola-dev-2026`。
 - 命令：本地验收 `npm run local`（8787）/ 开发 `dev:api`+`dev`（5175）/ `typecheck`·`build`·`deploy` / `db:migrate:local|:remote`。
 - 自检：`scripts/smoke-api.ps1`、`smoke-applications.ps1`、`probe-local.ps1`。
+- **远程仓库**：remote 名 `kingcalo-icg-home` → `https://github.com/thebestskinhead/kingcola-icg-home.git`（GPL-3.0）。
+  本地与远程原本是**两条互不相关的历史**（远程只有 GitHub 建仓时那份 LICENSE 的 `Initial commit` 2085bc1），
+  2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（得到 `e223097`）后推送成功。
+  ⚠️ **绝不能强推 main** —— 本地历史里没有 LICENSE 文件，强推会把 GPL-3.0 许可证从仓库上抹掉。
+  `main` **没有设 upstream**，推送要写全：`git push kingcalo-icg-home main`。
 
 ## 多会话并行（重要）
 工作区被多会话并行修改（含本记忆文件）：**动文件前先读当前内容**。提交前逐文件 `git diff`，并用 `git show HEAD:<file> | findstr /C:"符号"` 验证 HEAD 是否自洽 —— 若别人新代码引用的符号不在 HEAD 里（曾出现在 applications.ts / endpoints.ts / index.ts），必须把那批文件一起提交，否则留下**编译不过的 HEAD**。中文提交信息写 UTF-8 文件 + `git commit -F`。
