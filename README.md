@@ -161,6 +161,11 @@ id = "你的命名空间 ID"              # 不填 = 首次部署自动创建
 npx wrangler secret put SESSION_SECRET            # 其余五个同理，逐个执行（交互式粘贴值）
 ```
 
+> ⚠️ **批量写入要带 `--name`**：写成 `npx wrangler secret bulk .env --name <你的 Worker 名>`。
+> 不带 `--name` 时 wrangler 会用 `wrangler.toml` 里的通用名（默认 `kingcola`），
+> **把密钥写到别的 Worker 上、甚至新建一个同名 Worker** —— 站点看起来就像「密钥没生效」。
+> 写完立即生效，**不需要重新部署**。
+>
 > ⚠️ **用脚本/管道批量写入时，别用 `echo '值' | wrangler secret put NAME`** —— 实测会把**换行也存进去**，
 > 于是之后无论怎么手输都对不上（表现为「恢复口令不正确」这类「值明明对却报错」的现象）。
 > 脚本化请改成 `wrangler secret bulk secrets.json`，JSON 里的字符串值不会被带上换行。

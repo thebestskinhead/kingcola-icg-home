@@ -35,6 +35,12 @@
     （改完 health 三项 true、bootstrap/login 实测 200）；
     `SMTP_PASSWORD` / `SSO_CLIENT_SECRET` / `QR_SIGN_SECRET` **保持注释**（占位符若被 bulk 上去会把线上写坏）——填好后取消注释再 bulk 一次。
     本地 `wrangler dev` 读的仍是 `.dev.vars`（另一套联调值，别混）；前端不用 Vite 环境变量（无 `import.meta.env`），`.env` 不影响构建。
+    ⚠️ **`wrangler secret` 系列命令默认取 `wrangler.toml` 的 `name`（现在是通用名 `kingcola`）**：必须带
+    `--name <面板项目名>`，否则密钥会写到 —— 甚至**新建**出 —— 另一个 Worker（本项目就误建过一个 `kingcola`，
+    表现为 `-home2` 上「密钥写不进去」）。正确写法：`npx wrangler secret bulk .env --name kingcola-icg-home2`；
+    写完**立即生效、不需要重新部署**（2026-09-29 先误判成「要 deploy 才生效」，已在 README / .env 里纠正）。
+    `-home2` 现有 5 个密钥（SESSION_SECRET / STUDENT_SESSION_SECRET / RECOVERY_TOKEN / SSO_CLIENT_SECRET / QR_SIGN_SECRET），
+    只差 `SMTP_PASSWORD`（只有用户知道）。孤儿 Worker `kingcola-icg-home` 与误建的 `kingcola` 均已删除。
   - ⚠️ `wrangler dev --remote` 不支持 ID-less 绑定（报 `CONFIG_KV bindings must have an "id" field`）；本地普通 `wrangler dev` 不受影响。
 - **远程仓库**：remote 名 `kingcalo-icg-home` → `https://github.com/thebestskinhead/kingcola-icg-home.git`（GPL-3.0）。本地与远程原是两条互不相关的历史，2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（`e223097`）后推送成功。⚠️ **绝不能强推 main**（本地历史没有 LICENSE，强推会抹掉 GPL-3.0）。`main` 没设 upstream，推送写全 `git push kingcalo-icg-home main`。**仓库里 `wrangler.toml` 的 `name` 是通用默认值 `kingcola`**（用户 2026-09-29 明确：配置要通用，账号专属的东西不许进仓库）。实际部署名放在本机 `.env.deploy` 的 `WORKER_NAME`（`scripts/ci-deploy.mjs` 会自动补 `--name`）；CI 里没有这个文件，于是走默认名、再由 Cloudflare 用面板项目名覆盖（仅警告，部署照常成功）。本项目的面板项目名是 `kingcola-icg-home2`；`kingcola-icg-home` 是早期 CLI 部署留下的**孤儿 Worker**（已无域名）。
 - **云资源绑定约定（2026-09-29 用户口径，以此为准）**：**首次部署自动创建 D1 / KV / R2** —— `wrangler.toml` 里 D1 的 `database_id` 与 KV 的 `id` **故意留空**（wrangler 按 `database_name` 找、找不到就建；KV 名字由 wrangler 定），R2 由 `scripts/ci-deploy.mjs` 探测后决定建还是降级。**只有想复用已有资源**才填 ID（填了就不再自动创建）；⚠️ 绝不要写假占位符（`REPLACE_WITH_...` 会让整个部署失败，撞过 `KV namespace ... is not valid`）。预设名：D1 `kingcola-db`→`DB`、R2 `kingcola-files`→`FILES`、KV 绑定名 `CONFIG_KV`；命名表与 6 个密钥名在 **README「部署」**。⚠️ 绑定以 `wrangler.toml` 为准，别只在面板 Bindings 里绑；`keep_bindings` 在 wrangler 4.137 不存在，只有 `keep_vars`。
