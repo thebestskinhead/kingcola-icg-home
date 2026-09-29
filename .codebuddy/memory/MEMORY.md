@@ -19,6 +19,9 @@
 - 接口信封 `{ ok, data }` / `{ ok, error:{code,message} }`，前端 `apiRequest` 解包。**D1 唯一事实源**；KV 只做配置缓存（写 D1 后删 KV）。
 - 站点文案来自 `site_config['site']`（JSON 合并、无迁移）；新增字段改三处：shared/types.ts → SettingsPage → section；列表解析在 `shared/site.ts`。
 - 管理员存 D1 `admin_users`（PBKDF2）；`RECOVERY_TOKEN` 灾备。运维文档 `docs/HANDOVER.md`。
+  **首次初始化有页面引导**：`/admin` 登录页读公开接口 `/api/config/runtime` 的 `initialized`（= `countAdmins() > 0`），
+  空库时显示「首次初始化」卡片（初始化口令 + 用户名 + 密码，建完直接进后台），已初始化则是登录表单 +
+  「忘记密码用初始化口令重置」的说明；两端密码下限都是 8 位（`LoginPage` 的 `MIN_PASSWORD` ↔ worker 的 `minPasswordLength()`）。
 
 ## 环境与命令
 - PATH 无 node/npm：`Import-Module D:\usexxx\use-xxx.psm1; use-node 22.23.2`（Vite 7 要求 22.23.2）；npm 加 `--registry=https://registry.npmmirror.com`（原镜像已失效）。
