@@ -61,6 +61,12 @@
   `FORCE_NO_R2=1` 可强制降级、`--dry-run` 本地演练。
   ⚠️ 因此 **`wrangler.toml` 里的 `[[r2_buckets]]` 绝不能手动删**（`wrangler dev` 靠它模拟本地 R2 桶，
   本地开发与 `scripts/smoke-api.ps1` 的 8a/8b 都依赖它）；没有 R2 的账号靠这个脚本照样能部署成功。
+- ⚠️⚠️ **PBKDF2 迭代数受 Workers CPU 预算硬约束（2026-09-29 线上踩坑）**：本项目账号是**免费版**，
+  `worker/lib/crypto.ts` 原来是 **150 000** 次 → **线上必挂**：登录 / 初始化管理员这类要算哈希的接口返回
+  `500 服务异常`（`INTERNAL_ERROR`），而健康检查/内容/运行时配置等纯读接口全部正常 → 极容易误判成数据库或绑定问题。
+  二分实测（该账号）：4 万 / 6 万 / 10 万次都通过，**15 万次必挂** → 已改成 **50 000**（约 2 倍余量）并部署验证
+  （bootstrap 200 + login 200）。**已存哈希自带迭代数**，改常量不会让旧密码失效；但旧哈希若本身超预算仍会 500，用 bootstrap 重置一次即可。
+  想恢复 OWASP 建议的 60 万次：先升级 Workers Paid（CPU 上限大幅提高）。
 - ⚠️ **`wrangler secret put` 千万别用管道喂值**：`'值' | wrangler secret put NAME` 会把**换行一起存进去**，
   之后无论怎么手输都对不上（本项目踩过：`/admin` 首次初始化一直报「恢复口令不正确」）。
   脚本化写密钥请用 **`wrangler secret bulk secrets.json`**（JSON 字符串值不带换行）。
