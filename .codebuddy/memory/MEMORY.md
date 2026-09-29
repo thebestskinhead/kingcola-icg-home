@@ -30,6 +30,11 @@
     ⚠️ **密钥是「按 Worker 各存一套」**：换 Worker 名或迁域名后必须重新写一遍（否则登录签发不了会话、bootstrap 直接 503）；
     2026-09-29 迁到 `-home2` 后就用 `wrangler secret bulk` 补了 3 个（**别用管道 `secret put`**，会带换行）。
     ⚠️ **`/api/health` 会被边缘缓存**（没带 `no-store`）：改完绑定/密钥后直接查可能拿到旧值，排查时加 `?nocache=<时间戳>` 绕开。
+  - **密钥台账＝本地 `.env`**（2026-09-29 生成，已 gitignore、**永不入库**，模板头部写清用法）：
+    含 `SESSION_SECRET` / `STUDENT_SESSION_SECRET` / `RECOVERY_TOKEN` 三个**真实值**，并已 `wrangler secret bulk .env` 写入 `-home2`
+    （改完 health 三项 true、bootstrap/login 实测 200）；
+    `SMTP_PASSWORD` / `SSO_CLIENT_SECRET` / `QR_SIGN_SECRET` **保持注释**（占位符若被 bulk 上去会把线上写坏）——填好后取消注释再 bulk 一次。
+    本地 `wrangler dev` 读的仍是 `.dev.vars`（另一套联调值，别混）；前端不用 Vite 环境变量（无 `import.meta.env`），`.env` 不影响构建。
   - ⚠️ `wrangler dev --remote` 不支持 ID-less 绑定（报 `CONFIG_KV bindings must have an "id" field`）；本地普通 `wrangler dev` 不受影响。
 - **远程仓库**：remote 名 `kingcalo-icg-home` → `https://github.com/thebestskinhead/kingcola-icg-home.git`（GPL-3.0）。本地与远程原是两条互不相关的历史，2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（`e223097`）后推送成功。⚠️ **绝不能强推 main**（本地历史没有 LICENSE，强推会抹掉 GPL-3.0）。`main` 没设 upstream，推送写全 `git push kingcalo-icg-home main`。**Worker 名定为 `kingcola-icg-home2`**（= 面板里那个 Git 项目的名字，**不是仓库名**，别再照抄仓库名），不一致时 Git 构建会打 `Failed to match Worker name` 警告、用 CI 名字覆盖并自动开 PR（2026-09-29 收到的 PR 就是要求改成 `-home2`）。`kingcola-icg-home` 是早期 CLI 部署留下的**孤儿 Worker**（已无域名，别再往它部署）。
 - **云资源绑定约定（2026-09-29 用户口径，以此为准）**：**首次部署自动创建 D1 / KV / R2** —— `wrangler.toml` 里 D1 的 `database_id` 与 KV 的 `id` **故意留空**（wrangler 按 `database_name` 找、找不到就建；KV 名字由 wrangler 定），R2 由 `scripts/ci-deploy.mjs` 探测后决定建还是降级。**只有想复用已有资源**才填 ID（填了就不再自动创建）；⚠️ 绝不要写假占位符（`REPLACE_WITH_...` 会让整个部署失败，撞过 `KV namespace ... is not valid`）。预设名：D1 `kingcola-db`→`DB`、R2 `kingcola-files`→`FILES`、KV 绑定名 `CONFIG_KV`；命名表与 6 个密钥名在 **README「部署」**。⚠️ 绑定以 `wrangler.toml` 为准，别只在面板 Bindings 里绑；`keep_bindings` 在 wrangler 4.137 不存在，只有 `keep_vars`。
