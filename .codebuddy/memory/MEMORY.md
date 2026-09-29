@@ -30,6 +30,9 @@
   2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（得到 `e223097`）后推送成功。
   ⚠️ **绝不能强推 main** —— 本地历史里没有 LICENSE 文件，强推会把 GPL-3.0 许可证从仓库上抹掉。
   `main` **没有设 upstream**，推送要写全：`git push kingcalo-icg-home main`。
+- **本机日志已在 `.gitignore` 里**（`dev.out`/`dev.err`/`dev-server.out`/`dev-server.err` 与 `.codebuddy/*.out|err`）；
+  `dev-server.err`/`dev.err`/`dev.out` 曾被误提交，2026-09-29 已 `git rm --cached` 取消跟踪（文件仍在本地）。
+  **别再 `git add -A` 把这类运行产物提交进去**（`dev-server.log` 之类走 `*.log` 已被忽略）。
 
 ## 多会话并行（重要）
 工作区被多会话并行修改（含本记忆文件）：**动文件前先读当前内容**。提交前逐文件 `git diff`，并用 `git show HEAD:<file> | findstr /C:"符号"` 验证 HEAD 是否自洽 —— 若别人新代码引用的符号不在 HEAD 里（曾出现在 applications.ts / endpoints.ts / index.ts），必须把那批文件一起提交，否则留下**编译不过的 HEAD**。中文提交信息写 UTF-8 文件 + `git commit -F`。
