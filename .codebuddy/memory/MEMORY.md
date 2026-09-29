@@ -30,6 +30,12 @@
   2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（得到 `e223097`）后推送成功。
   ⚠️ **绝不能强推 main** —— 本地历史里没有 LICENSE 文件，强推会把 GPL-3.0 许可证从仓库上抹掉。
   `main` **没有设 upstream**，推送要写全：`git push kingcalo-icg-home main`。
+- **云资源绑定约定（用户 2026-09-29 口径）**：**不自动创建** —— `database_id` / KV 的 `id` **绝不留空**
+  （留空 = 让 wrangler 自动新建一套带 Worker 名前缀的资源，这不是我们想要的）；由部署者**自己建 + 手动绑定**，
+  项目只固定「预设名字」：D1 `kingcola-db` → 别名 `DB`；KV `CONFIG_KV` → 别名 `CONFIG_KV`；
+  R2 `kingcola-files` → 别名 `FILES`（**R2 按桶名绑定，没有 ID 要填**）。
+  名字/别名表与 6 个密钥名写在 **README「部署 → 1. 自己创建云资源」**（`wrangler.toml` 注释里也标了别名）。
+  ⚠️ 绑定以 `wrangler.toml` 为准，别只在面板 Bindings 里绑（下次部署会被覆盖；`keep_bindings` 在 wrangler 4.137 里不存在，只有 `keep_vars`）。
 - **本机日志已在 `.gitignore` 里**（`dev.out`/`dev.err`/`dev-server.out`/`dev-server.err` 与 `.codebuddy/*.out|err`）；
   `dev-server.err`/`dev.err`/`dev.out` 曾被误提交，2026-09-29 已 `git rm --cached` 取消跟踪（文件仍在本地）。
   **别再 `git add -A` 把这类运行产物提交进去**（`dev-server.log` 之类走 `*.log` 已被忽略）。
