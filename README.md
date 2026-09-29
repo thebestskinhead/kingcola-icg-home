@@ -155,8 +155,13 @@ id = "你的命名空间 ID"              # 不填 = 首次部署自动创建
 | `SMTP_PASSWORD` | 邮件通知的 SMTP 密码 / 授权码（未启用邮件可不填） |
 
 ```bash
-npx wrangler secret put SESSION_SECRET            # 其余五个同理，逐个执行
+npx wrangler secret put SESSION_SECRET            # 其余五个同理，逐个执行（交互式粘贴值）
 ```
+
+> ⚠️ **用脚本/管道批量写入时，别用 `echo '值' | wrangler secret put NAME`** —— 实测会把**换行也存进去**，
+> 于是之后无论怎么手输都对不上（表现为「恢复口令不正确」这类「值明明对却报错」的现象）。
+> 脚本化请改成 `wrangler secret bulk secrets.json`，JSON 里的字符串值不会被带上换行。
+> 手动逐个执行 `secret put` 后按回车结束输入的方式不受影响。
 
 本地开发用同名变量放在 `.dev.vars`（已 gitignore）。
 

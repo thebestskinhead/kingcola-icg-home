@@ -61,6 +61,11 @@
   `FORCE_NO_R2=1` 可强制降级、`--dry-run` 本地演练。
   ⚠️ 因此 **`wrangler.toml` 里的 `[[r2_buckets]]` 绝不能手动删**（`wrangler dev` 靠它模拟本地 R2 桶，
   本地开发与 `scripts/smoke-api.ps1` 的 8a/8b 都依赖它）；没有 R2 的账号靠这个脚本照样能部署成功。
+- ⚠️ **`wrangler secret put` 千万别用管道喂值**：`'值' | wrangler secret put NAME` 会把**换行一起存进去**，
+  之后无论怎么手输都对不上（本项目踩过：`/admin` 首次初始化一直报「恢复口令不正确」）。
+  脚本化写密钥请用 **`wrangler secret bulk secrets.json`**（JSON 字符串值不带换行）。
+  排查小技巧：bootstrap 是**先验口令、后验密码**，可用「真口令 + 1 位密码」调接口做**非破坏性校验**
+  （`400 WEAK_PASSWORD` = 口令对，`403 INVALID_TOKEN` = 口令错，两种情况都不会建号）。
 - **本机日志已在 `.gitignore` 里**（`dev.out`/`dev.err`/`dev-server.out`/`dev-server.err` 与 `.codebuddy/*.out|err`）；
   `dev-server.err`/`dev.err`/`dev.out` 曾被误提交，2026-09-29 已 `git rm --cached` 取消跟踪（文件仍在本地）。
   **别再 `git add -A` 把这类运行产物提交进去**（`dev-server.log` 之类走 `*.log` 已被忽略）。
