@@ -211,6 +211,7 @@ curl -X POST https://<你的域名>/api/admin/bootstrap \
 | 密钥 | 6 个 secret 都已写入（`npx wrangler secret list`） |
 | 建表 | `npm run db:migrate:remote` 跑过（否则后台一进去就报错） |
 | 管理员 | `/admin` 能初始化并登录 |
+| **登录/初始化报「服务异常」** | 多半是 **PBKDF2 迭代数超过了 Workers 免费版的 CPU 预算**（纯读接口都正常，只有要算密码哈希的接口挂）。本项目实测：10 万次通过、**15 万次必挂**，故取 5 万次；详见 `worker/lib/crypto.ts` 顶部注释。要更高强度就升级 Workers Paid 再调大 |
 | 健康检查 | `curl https://<你的域名>/api/health` → `database: ok`，`storage.site/applications` 符合预期 |
 
 > **也可以连 Git 自动部署**（Cloudflare 面板 → Worker → Settings → Builds → Connect）：

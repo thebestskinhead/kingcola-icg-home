@@ -4,7 +4,21 @@
  */
 
 const encoder = new TextEncoder()
-const PBKDF2_ITERATIONS = 150_000
+
+/**
+ * PBKDF2 迭代次数 —— ⚠️ **这个值和 Workers 的 CPU 预算是硬约束**，别随手调大。
+ *
+ * 2026-09-29 线上实测（免费版账号）：PBKDF2-SHA256 **15 万次会被平台直接掐断**，
+ * 表现是登录 / 初始化管理员这类「要算密码哈希」的接口返回 `500 服务异常`（`INTERNAL_ERROR`），
+ * 而纯读接口（健康检查、内容、运行时配置）一切正常 —— 排查时很容易误判成数据库或绑定问题。
+ * 二分结果：4 万 / 6 万 / 10 万次都能通过，**15 万次必挂**；这里取 5 万，留约 2 倍余量。
+ *
+ * 想恢复更高强度（OWASP 对 PBKDF2-SHA256 的建议是 60 万次）：先升级到 **Workers Paid**
+ * （CPU 上限大幅提高）再调大这里。**已存哈希自带迭代数**（`pbkdf2$<迭代数>$<salt>$<hash>`），
+ * 改这个常量不会让旧密码失效；但如果某个旧哈希的迭代数本身超预算（如 15 万），
+ * 它每次校验仍会 500 —— 用 `POST /api/admin/bootstrap` 重置一次密码即可。
+ */
+const PBKDF2_ITERATIONS = 50_000
 
 export function randomHex(bytes: number): string {
   const buf = new Uint8Array(bytes)
