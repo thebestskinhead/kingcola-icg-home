@@ -8,8 +8,8 @@
 -- 标题与按钮作图上叠加文案，也可以全部留空、只展示图片。
 --
 -- 应用方式：
---   本地：pwsh -NoProfile -File scripts/migrate.ps1 -Target local
---   线上：pwsh -NoProfile -File scripts/migrate.ps1 -Target remote
+--   本地：npm run db:migrate:local
+--   线上：npm run db:migrate:remote
 -- ============================================================================
 
 ALTER TABLE slides ADD COLUMN type      TEXT NOT NULL DEFAULT 'text';

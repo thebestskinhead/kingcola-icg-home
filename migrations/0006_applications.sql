@@ -12,8 +12,8 @@
 --
 -- 时间列统一存 ISO 字符串（与其它表一致，便于直接比较与展示）。
 -- 应用方式：
---   本地：pwsh -NoProfile -File scripts/migrate.ps1 -Target local
---   线上：pwsh -NoProfile -File scripts/migrate.ps1 -Target remote
+--   本地：npm run db:migrate:local
+--   线上：npm run db:migrate:remote
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS applications (

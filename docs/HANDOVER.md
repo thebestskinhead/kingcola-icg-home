@@ -89,12 +89,10 @@ kingcola/
 # 0. 环境：Node.js 22.12+（Vite 7 的要求，20.19 以下会警告）
 npm install
 
-# 1. 创建云资源（只需做一次）
-npx wrangler d1 create kingcola-db          # 把 database_id 填进 wrangler.toml
-npx wrangler kv namespace create CONFIG_KV  # 把 id 填进 wrangler.toml
-npx wrangler r2 bucket create kingcola-files
+# 1. 云资源：**首次部署会自动创建 D1 / KV / R2**，不需要先手动建
+#    （D1 名 kingcola-db、R2 桶名 kingcola-files；想复用已有资源才把 ID 填进 wrangler.toml）
 
-# 2. 建表
+# 2. 建表（Node 脚本，Windows/macOS/Linux 都能跑；老库第一次要先加 --adopt 登记台账）
 npm run db:migrate:remote
 
 # 3. 写入密钥
@@ -157,13 +155,16 @@ curl https://<你的域名>/api/health
 | 端到端自检（内容 / 设置 / 认证） | `pwsh -File scripts/smoke-api.ps1` |
 | 端到端自检（招新报名状态机 + 邮件 + 报名表隐私） | `pwsh -File scripts/smoke-applications.ps1` |
 
-> ⚠️ `npm run db:migrate:*` 是**按文件名顺序把 migrations/ 全部重跑一遍**（靠报错跳过已执行的），
-> 所以**不要在已有数据的库上整体执行**：`0004` 是重建 `projects` 表，重跑会丢 `honor` / `featured` 并重排 id。
-> 已有数据的库请只执行新增的那一个文件，例如：
+> `npm run db:migrate:*` 现在带 `_migrations` 台账：**执行过的文件直接跳过**，重复运行安全。
+> 台账是 2026-09-29 才加的，所以第一次在老库上跑要先登记一次（只写台账、不执行任何 SQL）：
 >
 > ```bash
-> node .\node_modules\wrangler\bin\wrangler.js d1 execute kingcola-db --local --file=migrations/0005_slide_type.sql
+> node scripts/migrate.mjs local --adopt      # 线上换成 remote
 > ```
+>
+> 登记之后只有**新增**的 `migrations/*.sql` 会被执行。若怀疑某个文件其实没跑过，
+> 把台账里对应那行删掉再跑一次即可。⚠️ 反过来也要小心：删掉台账（或换库）后硬跑全量时，
+> `0004` 会重建 `projects` 表 —— 重跑会丢 `honor` / `featured` 并重排 id。
 >
 > `scripts/smoke-api.ps1` 会临时改写站点配置再还原；**中途异常中断时它来不及还原**，
 > 跑完请到 `/admin → 系统设置` 看一眼工作室名称是否还是自己的，别把「冒烟测试工作室」留在库里。

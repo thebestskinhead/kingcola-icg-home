@@ -12,8 +12,8 @@
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
-    "db:migrate:local": "pwsh -NoProfile -File ./scripts/migrate.ps1 -Target local",
-    "db:migrate:remote": "pwsh -NoProfile -File ./scripts/migrate.ps1 -Target remote"
+    "db:migrate:local": "node scripts/migrate.mjs local",
+    "db:migrate:remote": "node scripts/migrate.mjs remote"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

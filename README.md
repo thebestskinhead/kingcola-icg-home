@@ -93,6 +93,9 @@ pwsh -NoProfile -File scripts/probe-local.ps1  # 页面：前台与后台深层�
 ```
 
 > 含中文的 `.ps1` 必须用 `pwsh`（PowerShell 7）运行；Windows PowerShell 5.1 会因编码问题报语法错误。
+> **只有这几个自检脚本依赖 PowerShell**：部署（`npm run deploy`）与建表（`npm run db:migrate:*`）
+> 都是普通 Node 脚本，macOS / Linux 上照样能跑；非 Windows 想跑自检就装个 PowerShell 7
+> （macOS：`brew install --cask powershell`）。
 > 两个脚本都会自行启动 `wrangler dev`、测完再关闭；它们**只会清理自己启动的进程**，
 > 不会影响你用 `npm run local` 开着的服务。运行前请确认 8787 端口空闲。
 
@@ -186,6 +189,9 @@ npm run deploy        # = npm run build && node scripts/ci-deploy.mjs
 >   （加一次即可，后续部署不会清掉）；也可以 `npm run deploy -- --domains <你的域名>`。
 >   线上**必须**有自己的域名：`*.workers.dev` 在国内被 DNS 污染，干脆访问不了
 >   —— 这也是 `workers_dev = false` 的原因。
+>   **还没买域名？** 先把 `wrangler.toml` 里的 `workers_dev = false` 删掉（或改成 `true`），
+>   部署完就能用 `https://<Worker 名>.<你的子域>.workers.dev` 访问（国内需代理）；
+>   有域名后到面板挂上、再把 `workers_dev` 改回来即可。
 
 构建日志里出现 `Provisioning` / `Creating new D1 Database | KV Namespace | R2 Bucket` 就是它在建资源。
 再构建一次若还不断出现 `Creating new ...`，说明没能复用 —— 去面板把它的 ID 填进 `wrangler.toml`
@@ -254,7 +260,7 @@ curl -X POST https://<你的域名>/api/admin/bootstrap \
 | `npm run build` | 类型检查 + 构建前端 |
 | `npm run deploy` | 构建并部署到 Cloudflare |
 | `npm run typecheck` | 只做类型检查（前端 + Worker） |
-| `npm run db:migrate:local` / `:remote` | 按顺序执行 `migrations/*.sql`（重复执行已应用的文件会报错，可忽略） |
+| `npm run db:migrate:local` / `:remote` | 执行 `migrations/*.sql`（Node 脚本，跨平台）。已执行的记在 `_migrations` 台账里，**重复运行自动跳过**；老库（台账之前建的）首次要 `node scripts/migrate.mjs <local\|remote> --adopt` 登记一次 |
 | `pwsh -File scripts/smoke-api.ps1` | 内容 / 设置 / 认证 端到端自检 |
 | `pwsh -File scripts/smoke-applications.ps1` | 招新全链路自检（状态机、材料审核、替换与补录、签到二维码、通知邮件、归档清空） |
 

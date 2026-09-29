@@ -8,8 +8,8 @@
 -- SQLite 不能修改主键类型，只能重建表再搬数据。
 --
 -- 应用方式：
---   本地：pwsh -NoProfile -File scripts/migrate.ps1 -Target local
---   线上：pwsh -NoProfile -File scripts/migrate.ps1 -Target remote
+--   本地：npm run db:migrate:local
+--   线上：npm run db:migrate:remote
 -- ============================================================================
 
 PRAGMA foreign_keys = OFF;
