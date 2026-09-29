@@ -98,36 +98,52 @@ pwsh -NoProfile -File scripts/probe-local.ps1  # 页面：前台与后台深层�
 
 ## 部署
 
-### 1. 自己创建云资源（本仓库**不会**自动创建任何资源）
+### 1. 云资源（**首次部署会自动创建，不用先手动建**）
 
-下面这些名字是**项目预设的**，照着建就行 —— 不改名字就不需要动任何代码。
+三个资源与绑定别名都是预设好的，`wrangler.toml` 里已经写好，**默认不需要你填任何 ID**：
 
-| 资源 | 创建时用的名字 | 代码里的绑定别名 | 值写在哪 |
+| 资源 | 预设名字 | 代码里的绑定别名 | 首次部署时 |
 |---|---|---|---|
-| D1 数据库 | `kingcola-db` | `DB` | `wrangler.toml` → `[[d1_databases]]` 的 `database_id` |
-| KV 命名空间 | `CONFIG_KV` | `CONFIG_KV` | `wrangler.toml` → `[[kv_namespaces]]` 的 `id` |
-| R2 存储桶 | `kingcola-files` | `FILES` | `wrangler.toml` → `[[r2_buckets]]` 的 `bucket_name`（**按名字绑定，没有 ID 要填**） |
+| D1 数据库 | `kingcola-db` | `DB` | 自动创建（按 `database_name` 找，找不到就建） |
+| KV 命名空间 | 由 wrangler 定 | `CONFIG_KV` | 自动创建（KV 没有名字字段，所以你不用管它叫什么） |
+| R2 存储桶 | `kingcola-files` | `FILES` | 开通了 R2 就自动建；没开通就自动降级（见下） |
 
-```bash
-npx wrangler d1 create kingcola-db           # 输出里的 database_id → 填进 wrangler.toml
-npx wrangler kv namespace create CONFIG_KV   # 输出里的 id → 填进 wrangler.toml
-npx wrangler r2 bucket create kingcola-files # 不需要 ID，桶名对上即可
+**想复用自己已经建好的资源**（比如数据要留在老库里），就把 ID 填进 `wrangler.toml` 对应段落 ——
+填了就不会再自动创建：
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "kingcola-db"
+database_id = "你的库 ID"          # 不填 = 首次部署自动创建
+
+[[kv_namespaces]]
+binding = "CONFIG_KV"
+id = "你的命名空间 ID"              # 不填 = 首次部署自动创建
 ```
 
 > ⚠️ **绑定以 `wrangler.toml` 为准**：别只在 Cloudflare 面板的 Bindings 里手动绑定 ——
 > 下次 `wrangler deploy` 会按配置文件整体覆盖绑定，面板里多出来的会消失。
 > （`keep_vars` 只能保住环境**变量**；绑定的 `keep_bindings` 在 wrangler 4.x 里并不存在。）
 >
-> ⚠️ **不要图省事把 `database_id` / `id` 留空** —— 留空会被当作「请帮我自动创建资源」而新建一套
-> 带 Worker 名前缀的资源；仓库里的 `REPLACE_WITH_...` 占位符会在部署时报错，这是刻意的防呆。
+> ⚠️ **别写假的占位符 ID**：`database_id` / `id` 会被**原样发给 API**，填 `REPLACE_WITH_...`
+> 会让整个部署失败（我们撞过的 `KV namespace ... is not valid` 就是这么来的）。
+> 要么留空（= 自动创建），要么填真实 ID。
 
-### 2. 建表
+> **没有开通 R2？不用管，部署会自动降级。** R2 属于「要先在面板开通一次」的服务，没开通的账号
+> 直接 `wrangler deploy` 会在 provision 那一步失败。所以部署统一走 `node scripts/ci-deploy.mjs`
+> （`npm run deploy` 与 Workers Builds 的 Deploy command 都用它）：它先探测 R2 能不能用 ——
+> 能用就按 `wrangler.toml` 原样部署（零配置拿到 FILES 绑定），不能用就临时把 `[[r2_buckets]]`
+> 剔掉再部署。降级后**站点不会崩**：上传 / 报名表接口返回 503「对象存储未接通」，
+> 后台「对象存储」页可改接任意 S3 兼容存储（MinIO / 腾讯 COS / 阿里 OSS，或 R2 自己的 S3 API，
+> 无需重新部署），关闭本届会因无法归档而拒绝（保护数据）。
+> 想强制按「没有 R2」部署：构建环境变量加 `FORCE_NO_R2=1`；想完全跳过探测：
+> 把 Deploy command 直接写成 `npx wrangler deploy`。
+>
+> ⚠️ `wrangler.toml` 里的 `[[r2_buckets]]` **不要手动删** —— `wrangler dev` 靠它模拟本地 R2 桶，
+> 本地开发与 `scripts/smoke-api.ps1` 的头像上传都依赖它（删了本地自检会挂）。
 
-```bash
-npm run db:migrate:remote
-```
-
-### 3. 写入密钥（名字同样是预设的，共 6 个）
+### 2. 写入密钥（名字是预设的，共 6 个）
 
 | 名称 | 用途 |
 |---|---|
@@ -144,10 +160,23 @@ npx wrangler secret put SESSION_SECRET            # 其余五个同理，逐个�
 
 本地开发用同名变量放在 `.dev.vars`（已 gitignore）。
 
-### 4. 构建并部署
+### 3. 构建并部署（**这一步会把 D1 / KV / R2 建出来**）
 
 ```bash
-npm run deploy
+npm run deploy        # = npm run build && node scripts/ci-deploy.mjs
+```
+
+`scripts/ci-deploy.mjs` 会先探测账号能不能用 R2：能用就按 `wrangler.toml` 原样部署，
+不能用就自动剔掉 R2 绑定再部署（见下面那条说明），所以**没有开通 R2 也能一次部署成功**。
+
+构建日志里出现 `Provisioning` / `Creating new D1 Database | KV Namespace | R2 Bucket` 就是它在建资源。
+再构建一次若还不断出现 `Creating new ...`，说明没能复用 —— 去面板把它的 ID 填进 `wrangler.toml`
+（照上面「想复用已有资源」的写法），就不会再重复建了。
+
+### 4. 建表（**必须在首次部署之后** —— 库那时候才存在）
+
+```bash
+npm run db:migrate:remote        # 按库名 kingcola-db 执行，不需要 ID
 ```
 
 ### 5. 初始化管理员（线上只需一次）
@@ -159,10 +188,19 @@ curl -X POST https://<你的域名>/api/admin/bootstrap \
 ```
 
 > **也可以连 Git 自动部署**（Cloudflare 面板 → Worker → Settings → Builds → Connect）：
-> Build command 填 `npm run build`，Deploy command 保持默认 `npx wrangler deploy`。
-> 两点注意：① 构建镜像默认 Node 24，建议加一个构建变量 `NODE_VERSION=22` 钉住；
-> ② **数据库迁移不会自动跑**，上面第 2 步仍要手动执行。
-> 另外 `[env.preview]` 里没有重写绑定（wrangler 的绑定**不会**从顶层继承到具名环境），
+>
+> | 构建配置项 | 填什么 |
+> |---|---|
+> | Build command | `npm run build` |
+> | Deploy command | `node scripts/ci-deploy.mjs`（**不要**用 `npm run deploy`，那会二次构建） |
+> | Root directory | 留空 |
+>
+> 四点注意：
+> ① **项目名（Worker 名）必须和 `wrangler.toml` 的 `name` 一致** —— 面板从仓库导入时默认用仓库名，
+> 不一致会看到 `Failed to match Worker name... Overriding using the CI provided Worker name` 并自动开 PR；
+> ② 构建镜像默认 Node 24（实测跑得通），想钉住就加构建变量 `NODE_VERSION=22`；
+> ③ **数据库迁移不会自动跑**，上面第 4 步仍要手动执行（Workers Builds 自带的 token 没有 D1 权限）；
+> ④ `[env.preview]` 里没有重写绑定（wrangler 的绑定**不会**从顶层继承到具名环境），
 > 要开预览构建得先给它补上 D1/KV/R2。
 
 完整步骤与交接事项见 [`docs/HANDOVER.md`](docs/HANDOVER.md)。

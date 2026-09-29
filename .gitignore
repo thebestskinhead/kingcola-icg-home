@@ -16,6 +16,9 @@ dev-server.err
 .codebuddy/*.out
 .codebuddy/*.err
 
+# scripts/ci-deploy.mjs 生成的「无 R2」临时配置（部署完即删，这里只是兜底）
+wrangler.ci-no-r2.toml
+
 node_modules
 dist
 dist-ssr

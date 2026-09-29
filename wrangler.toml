@@ -26,32 +26,42 @@ run_worker_first = ["/api/*"]
 
 # ---------------------------------------------------------------------------
 # D1：唯一事实源（内容、管理员、审计、站点配置）
-# 首次部署前执行：
-#   npx wrangler d1 create kingcola-db
-# 然后把返回的 database_id 填到下面
-# ⚠️ 别留空：留空会被当成「请帮我自动创建资源」，wrangler 会另建一套带 Worker 名前缀的库
+# **首次部署自动创建**：这里故意不写 database_id —— wrangler 会按 database_name 找，
+# 找不到就建一个（建好后 ID 由它接管，不会回写到本文件）。
+# 想复用自己已有的库：把它的 database_id 填进来即可（填了就不再自动创建）。
+# ⚠️ 千万别写一个假的占位符 —— 它会被原样发给 API 而让整个部署失败
+#    （上一版就是 `database_id = "REPLACE_WITH_..."` 导致的 `KV namespace ... is not valid` 同类错误）。
+# 建表要等首次部署之后：`npm run db:migrate:remote`（按**库名**执行，不需要 ID）
 # ---------------------------------------------------------------------------
 [[d1_databases]]
-# 绑定别名 DB → 库名 kingcola-db（预设名字见 README「部署」一节）
+# 绑定别名 DB → 库名 kingcola-db
 binding = "DB"
 database_name = "kingcola-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+# database_id = "想复用已有的库就填这里（不填 = 首次部署自动创建）"
 
 # ---------------------------------------------------------------------------
 # KV：运行时配置缓存 / 会话白名单（可选，缺失时自动降级为直读 D1）
-#   npx wrangler kv namespace create CONFIG_KV
-# 然后把返回的 id 填到下面（别留空，同 D1）
+# **首次部署自动创建**：不写 id 就是让 wrangler 建一个（KV 没有名字字段，名字由它定）。
+# 想复用自己已有的命名空间：把 id 填进来。
 # ---------------------------------------------------------------------------
 [[kv_namespaces]]
-# 绑定别名与命名空间名同名：CONFIG_KV
+# 绑定别名 CONFIG_KV（代码里就是 env.CONFIG_KV）
 binding = "CONFIG_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+# id = "想复用已有的命名空间就填这里（不填 = 首次部署自动创建）"
 
 # ---------------------------------------------------------------------------
 # R2：文件存储（**按桶名绑定，没有 ID 要填**；桶建好、名字对上即可）。
 # 默认绑定别名 FILES（预设桶名 kingcola-files，见 README「部署」；站点图片与报名表两个业务目标都指向它，
 #       可在后台「对象存储」页改为任意 S3 兼容存储，或追加新绑定后按名选择）：
 #   npx wrangler r2 bucket create kingcola-files
+#
+# ⚠️ R2 是「需要先在面板开通的服务」（免费额度也要开通一次），**没开通的账号直接部署会失败**
+#    （provision 那一步报错，日志里是 `Provisioning FILES (R2 Bucket)`）。
+#    所以部署统一走 `node scripts/ci-deploy.mjs`：它先探测 R2 能不能用 ——
+#    能用就按本文件原样部署（零配置拿到 FILES 绑定）；不能用就临时把下面这段剔掉再部署，
+#    应用自动降级（上传/报名表接口 503、后台「对象存储」页可改接任意 S3 兼容存储、关闭本届会拒绝）。
+# ⚠️ 这段**不要手动删** —— `wrangler dev` 靠它模拟本地 R2 桶，本地开发与
+#    scripts/smoke-api.ps1 的头像上传（8a/8b）都依赖这个绑定。
 # ---------------------------------------------------------------------------
 [[r2_buckets]]
 binding = "FILES"
