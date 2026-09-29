@@ -7,6 +7,15 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# 本地开发与自检脚本重定向出来的日志（wrangler dev、smoke-api.ps1 等）——
+# 纯本机运行产物，不参与构建也不该进仓库。
+dev.out
+dev.err
+dev-server.out
+dev-server.err
+.codebuddy/*.out
+.codebuddy/*.err
+
 node_modules
 dist
 dist-ssr
