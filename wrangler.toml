@@ -10,10 +10,12 @@
 #   npm run dev               # vite dev（端口 5175，/api 反向代理到 8787）
 # ============================================================================
 
-# ⚠️ Worker 名必须与 Cloudflare 面板里的项目名一致，否则用 Git 构建部署时会看到
-#    `Failed to match Worker name... Overriding using the CI provided Worker name`（CI 会覆盖，
-#    并自动开一个 PR 想帮你改这里）。面板项目名默认取自仓库名，故与仓库同名。
-name = "kingcola-icg-home"
+# ⚠️ Worker 名必须与 Cloudflare 面板里的项目名**完全一致**，否则 Git 构建部署时会看到
+#    `Failed to match Worker name... Overriding using the CI provided Worker name`，
+#    CI 会用它的名字覆盖并自动开一个 PR 想帮你改这里（2026-09-29 就收到过这样的 PR）。
+#    本项目的面板项目名是 `kingcola-icg-home2`（当初导入仓库时生成的名字，比仓库名多了个 2），
+#    所以这里跟着写成 `-home2` —— 改名字前先确认面板，**别照抄仓库名**。
+name = "kingcola-icg-home2"
 main = "worker/index.ts"
 compatibility_date = "2026-09-01"
 
