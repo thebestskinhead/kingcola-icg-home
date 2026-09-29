@@ -30,6 +30,8 @@
   2026-09-29 用 `git merge kingcalo-icg-home/main --allow-unrelated-histories` 合并（得到 `e223097`）后推送成功。
   ⚠️ **绝不能强推 main** —— 本地历史里没有 LICENSE 文件，强推会把 GPL-3.0 许可证从仓库上抹掉。
   `main` **没有设 upstream**，推送要写全：`git push kingcalo-icg-home main`。
+  **Worker 名已定为 `kingcola-icg-home`**（与面板项目名/仓库名一致）—— 面板项目名取自仓库名，
+  `wrangler.toml` 的 `name` 与它不一致时，Git 构建会打 `Failed to match Worker name` 警告、用 CI 的名字覆盖并自动开 PR。
 - **云资源绑定约定（用户 2026-09-29 口径，改过两轮，以这版为准）**：**首次部署自动创建 D1 / KV / R2** ——
   `wrangler.toml` 里 D1 的 `database_id` 与 KV 的 `id` **故意留空**（wrangler 按 `database_name` 找、找不到就建；
   KV 没有名字字段，名字由 wrangler 定），R2 由 `scripts/ci-deploy.mjs` 探测后决定「建」还是「降级」。
